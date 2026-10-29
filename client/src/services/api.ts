@@ -1,6 +1,9 @@
 function getApiBase(): string {
-  const envUrl = (import.meta.env.VITE_API_URL || '/api').trim().replace(/\/+$/, '');
-  if (!envUrl || envUrl === '/api') return '/api';
+  const envUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  // If not configured, or if mistakenly set to the frontend Netlify domain, use the /api proxy
+  if (!envUrl || envUrl.includes('netlify.app') || envUrl === '/api') {
+    return '/api';
+  }
   return envUrl.endsWith('/api') ? envUrl : `${envUrl}/api`;
 }
 

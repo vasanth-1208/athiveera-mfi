@@ -8,6 +8,12 @@
   SECRETS_SCAN_OMIT_KEYS = "PORT,NODE_ENV,CORS_ORIGIN,JWT_EXPIRES_IN,JWT_SECRET,MONGODB_URI"
 
 [[redirects]]
+  from = "/api/*"
+  to = "https://athiveera-mfi.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
