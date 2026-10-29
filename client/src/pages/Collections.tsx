@@ -95,6 +95,9 @@ export const Collections: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['dashboardMetrics'] });
       queryClient.invalidateQueries({ queryKey: ['dashboardCharts'] });
       queryClient.invalidateQueries({ queryKey: ['loans'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyLedger'] });
+      queryClient.invalidateQueries({ queryKey: ['cashbook'] });
+      queryClient.invalidateQueries({ queryKey: ['denominations'] });
       setIsPartialModalOpen(false);
       setPartialMember(null);
       setPartialAmount('');
@@ -158,6 +161,9 @@ export const Collections: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['staffCollections'] });
       queryClient.invalidateQueries({ queryKey: ['dashboardMetrics'] });
       queryClient.invalidateQueries({ queryKey: ['loans'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyLedger'] });
+      queryClient.invalidateQueries({ queryKey: ['cashbook'] });
+      queryClient.invalidateQueries({ queryKey: ['denominations'] });
     } catch (err: any) {
       alert(err.message || 'Failed to record group collection');
     } finally {

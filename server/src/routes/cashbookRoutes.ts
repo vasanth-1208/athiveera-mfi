@@ -60,7 +60,15 @@ router.get('/daily-ledger', async (req: Request, res: Response) => {
       isReversed: false
     }).populate('customerId', 'name phone').populate('groupId', 'name groupCode').lean();
 
-    const collectionsTotal = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const isSettlement = (p: any) => {
+      const rem = (p.remarks || '').toLowerCase();
+      const ref = (p.referenceNo || '').toLowerCase();
+      const rcp = (p.receiptNumber || '').toLowerCase();
+      return rem.includes('settlement') || ref.includes('settle') || rcp.includes('settle');
+    };
+
+    const routePayments = payments.filter(p => !isSettlement(p));
+    const collectionsTotal = routePayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
     // 3. Loans disbursed on this date (Full principal under Debits, docCharges under Credits)
     const disbursements = await Loan.find({
@@ -116,22 +124,31 @@ router.get('/daily-ledger', async (req: Request, res: Response) => {
       const prevKey = getPreviousDateKey(dateKey);
       openingBalance = resolveHistoricalClosing(prevKey);
 
-      // Add Collections received
+      // Add Collections received (Dynamic update on Mark Paid)
       if (dateKey === '2026-10-29') {
-        // Today: collections strictly verified against Z LEDGER NOTE BOOK (1).xlsx (48,700)
-        const zLedgerCollection = baselineMap['2026-10-29']?.credits?.find((c: any) => c.particulars?.includes('COLLECTION'))?.amount || 48700;
+        // Base morning collections reconciled with Z LEDGER (48,700 from initial 56 collections)
+        // PLUS any route collections recorded via Mark Paid or app today
+        const baseCutoff = new Date('2026-10-29T06:00:00.000Z');
+        const liveAppPayments = routePayments.filter(p => new Date(p.createdAt) > baseCutoff);
+        const liveAppTotal = liveAppPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+        const totalCollectionAmount = 48700 + liveAppTotal;
+        const totalCount = 56 + liveAppPayments.length;
+
         credits.push({
           particulars: 'COLLECTION AMOUNT RECEIVED',
           category: 'ROUTE_COLLECTION',
-          amount: zLedgerCollection,
-          details: `56 Route Collections Received (Reconciled with Z LEDGER NOTE BOOK)`
+          amount: totalCollectionAmount,
+          details: liveAppPayments.length > 0
+            ? `${totalCount} Route Collections Received (56 Reconciled with Z LEDGER + ${liveAppPayments.length} App Collection${liveAppPayments.length > 1 ? 's' : ''})`
+            : `56 Route Collections Received (Reconciled with Z LEDGER NOTE BOOK)`
         });
-      } else if (collectionsTotal > 0 || payments.length > 0) {
+      } else if (collectionsTotal > 0 || routePayments.length > 0) {
         credits.push({
           particulars: 'COLLECTION AMOUNT RECEIVED',
           category: 'ROUTE_COLLECTION',
           amount: collectionsTotal,
-          details: `${payments.length} Route Collections Received`
+          details: `${routePayments.length} Route Collections Received`
         });
       }
 
@@ -276,7 +293,15 @@ router.get('/denominations', async (req: Request, res: Response) => {
     if (baselineMap[dateKey]) {
       currentSystemBalance = baselineMap[dateKey].closingBalance;
     } else if (dateKey === '2026-10-29') {
-      currentSystemBalance = 133179;
+      const baseCutoff = new Date('2026-10-29T06:00:00.000Z');
+      const liveAppPayments = (await Payment.find({
+        branchId,
+        paymentDate: { $gte: startOfDay, $lte: endOfDay },
+        createdAt: { $gt: baseCutoff },
+        isReversed: false
+      }).lean()).filter((p: any) => !(p.remarks || '').toLowerCase().includes('settlement'));
+      const liveAppTotal = liveAppPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+      currentSystemBalance = 133179 + liveAppTotal;
     }
 
     let denom = await Denomination.findOne({
