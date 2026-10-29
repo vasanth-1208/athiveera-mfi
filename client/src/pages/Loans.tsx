@@ -73,6 +73,7 @@ export const Loans: React.FC = () => {
   const [editingLoan, setEditingLoan] = useState<any | null>(null);
   const [editLoanForm, setEditLoanForm] = useState({
     loanNumber: '',
+    customerId: '',
     principal: 0,
     interestAmount: 0,
     docCharges: 0,
@@ -841,6 +842,7 @@ export const Loans: React.FC = () => {
     setEditingLoan(l);
     setEditLoanForm({
       loanNumber: l.loanNumber || '',
+      customerId: l.customerId?.customerId || (typeof l.customerId === 'string' ? l.customerId : ''),
       principal: l.principal || 0,
       interestAmount: l.interestAmount || 0,
       docCharges: l.docCharges || 0,
@@ -2831,15 +2833,51 @@ export const Loans: React.FC = () => {
                 <h4 className="font-bold text-amber-950 uppercase tracking-wider text-[11px] border-b border-[#ece3d4] pb-1">
                   1. Loan Identification & Routing
                 </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block font-bold text-stone-800 mb-1">Loan Account # *</label>
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-stone-800 mb-1">
+                      Loan Account # *
+                      <span className="text-[10px] text-amber-700 ml-1 font-normal">(Embeds Customer ID)</span>
+                    </label>
                     <input
                       type="text"
                       required
                       value={editLoanForm.loanNumber}
-                      onChange={(e) => setEditLoanForm({ ...editLoanForm, loanNumber: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const match = val.match(/ATH-[A-Z]+-CUST-\d+/i) || val.match(/CUST-\d+/i);
+                        setEditLoanForm({
+                          ...editLoanForm,
+                          loanNumber: val,
+                          customerId: match ? match[0].toUpperCase() : editLoanForm.customerId
+                        });
+                      }}
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono font-bold text-stone-900 focus:outline-none focus:border-amber-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-stone-800 mb-1">
+                      Mapped Customer ID
+                      <span className="text-[10px] text-stone-500 ml-1 font-normal">(Auto-sync)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={editLoanForm.customerId || ''}
+                      onChange={(e) => {
+                        const newCid = e.target.value.toUpperCase();
+                        let updatedLoanNum = editLoanForm.loanNumber;
+                        if (newCid && /ATH-[A-Z]+-CUST-\d+/i.test(updatedLoanNum)) {
+                          updatedLoanNum = updatedLoanNum.replace(/ATH-[A-Z]+-CUST-\d+/i, newCid);
+                        }
+                        setEditLoanForm({
+                          ...editLoanForm,
+                          customerId: newCid,
+                          loanNumber: updatedLoanNum
+                        });
+                      }}
+                      placeholder="e.g. ATH-PL-CUST-0341"
+                      className="w-full px-3 py-2 bg-amber-50/50 border border-[#ded3be] rounded-xl font-mono font-bold text-amber-950 focus:outline-none focus:border-amber-600"
                     />
                   </div>
 

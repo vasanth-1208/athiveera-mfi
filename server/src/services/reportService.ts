@@ -119,44 +119,91 @@ export class ReportService {
     const summaryRows: any[] = [];
     const groupRows: any[] = [];
 
+    const dateRanges = days.map(d => ({ day: d, ...getRouteDateForWeekday(d) }));
+    const minStartOfDay = new Date(Math.min(...dateRanges.map(r => r.startOfDay.getTime())));
+    const maxEndOfDay = new Date(Math.max(...dateRanges.map(r => r.endOfDay.getTime())));
+
+    // 1. Fetch ALL groups for the week
+    const allGroups = await Group.find({ ...baseQuery, collectionDay: { $in: days } }).sort({ groupCode: 1 }).lean();
+    const allGroupIds = allGroups.map(g => g._id);
+
+    // 2. Fetch ALL active/overdue loans for these groups
+    const allLoans = await Loan.find({
+      groupId: { $in: allGroupIds },
+      status: { $in: ['ACTIVE', 'OVERDUE'] }
+    }).populate('customerId', 'name phone').lean();
+    const allLoanIds = allLoans.map(l => l._id);
+
+    // 3. Pre-fetch targeted installments for these loans
+    const allInstallments = await Installment.find({
+      loanId: { $in: allLoanIds },
+      $or: [
+        { status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] } },
+        { dueDate: { $gte: minStartOfDay, $lte: maxEndOfDay } },
+        { paidDate: { $gte: minStartOfDay, $lte: maxEndOfDay } }
+      ]
+    }).lean();
+
+    const instsByLoan = new Map<string, any[]>();
+    for (const inst of allInstallments) {
+      const key = String(inst.loanId);
+      let arr = instsByLoan.get(key);
+      if (!arr) {
+        arr = [];
+        instsByLoan.set(key, arr);
+      }
+      arr.push(inst);
+    }
+
+    // 4. Pre-fetch all payments for these groups across all weekdays
+    const allPayments = await Payment.find({
+      groupId: { $in: allGroupIds },
+      paymentDate: { $gte: minStartOfDay, $lte: maxEndOfDay },
+      isReversed: false
+    }).lean();
+
     let totalExp = 0;
     let totalColl = 0;
 
-    for (const day of days) {
-      const { startOfDay, endOfDay } = getRouteDateForWeekday(day);
-      const groups = await Group.find({ ...baseQuery, collectionDay: day }).sort({ groupCode: 1 });
+    for (const { day, startOfDay, endOfDay } of dateRanges) {
+      const dayStartTs = startOfDay.getTime();
+      const dayEndTs = endOfDay.getTime();
+
+      const groups = allGroups.filter(g => g.collectionDay === day);
       let dayExp = 0;
       let dayColl = 0;
       let dayBorrowers = 0;
 
       for (const grp of groups) {
-        const loans = await Loan.find({ groupId: grp._id, status: { $in: ['ACTIVE', 'OVERDUE'] } })
-          .populate('customerId', 'name phone');
+        const grpIdStr = String(grp._id);
+        const loans = allLoans.filter(l => String(l.groupId) === grpIdStr);
 
-        const payments = await Payment.find({
-          groupId: grp._id,
-          paymentDate: { $gte: startOfDay, $lte: endOfDay },
-          isReversed: false
+        const payments = allPayments.filter(p => {
+          if (String(p.groupId) !== grpIdStr) return false;
+          const pDate = new Date(p.paymentDate).getTime();
+          return pDate >= dayStartTs && pDate <= dayEndTs;
         });
         const grpColl = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
         let grpExp = 0;
         for (const l of loans) {
-          let targetInst = await Installment.findOne({
-            loanId: l._id,
-            dueDate: { $gte: startOfDay, $lte: endOfDay }
+          const loanInsts = instsByLoan.get(String(l._id)) || [];
+          let targetInst = loanInsts.find(i => {
+            if (!i.dueDate) return false;
+            const t = new Date(i.dueDate).getTime();
+            return t >= dayStartTs && t <= dayEndTs;
           });
           if (!targetInst) {
-            targetInst = await Installment.findOne({
-              loanId: l._id,
-              paidDate: { $gte: startOfDay, $lte: endOfDay }
+            targetInst = loanInsts.find(i => {
+              if (!i.paidDate) return false;
+              const t = new Date(i.paidDate).getTime();
+              return t >= dayStartTs && t <= dayEndTs;
             });
           }
           if (!targetInst) {
-            targetInst = await Installment.findOne({
-              loanId: l._id,
-              status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-            }).sort({ installmentNumber: 1 });
+            const pendingInsts = loanInsts.filter(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
+            pendingInsts.sort((a, b) => a.installmentNumber - b.installmentNumber);
+            targetInst = pendingInsts[0];
           }
           grpExp += targetInst ? targetInst.expectedAmount : 0;
         }

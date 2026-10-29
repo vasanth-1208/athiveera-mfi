@@ -5,6 +5,7 @@ import { Loan } from '../models/Loan';
 import { Installment } from '../models/Installment';
 import { Payment } from '../models/Payment';
 import { FollowUp } from '../models/FollowUp';
+import { getNextCustomerId } from '../services/customerService';
 import { authenticate } from '../middleware/auth';
 import { enforceBranchScope, requireRole } from '../middleware/roles';
 
@@ -49,15 +50,16 @@ router.get('/', async (req: Request, res: Response) => {
     else if (sortBy === 'newest') sortObj = { createdAt: -1 };
     else if (sortBy === 'oldest') sortObj = { createdAt: 1 };
 
-    const total = await Customer.countDocuments(query);
-    const activeCount = await Customer.countDocuments({ ...query, status: 'ACTIVE' });
-    const closedCount = await Customer.countDocuments({ ...query, status: { $in: ['CLOSED', 'SETTLED', 'INACTIVE'] } });
-
     const loanScopeQuery: any = {};
     if (query.branchId) loanScopeQuery.branchId = query.branchId;
 
-    const activeLoansCount = await Loan.countDocuments({ ...loanScopeQuery, status: { $in: ['ACTIVE', 'OVERDUE'] } });
-    const closedLoansCount = await Loan.countDocuments({ ...loanScopeQuery, status: 'CLOSED' });
+    const [total, activeCount, closedCount, activeLoansCount, closedLoansCount] = await Promise.all([
+      Customer.countDocuments(query),
+      Customer.countDocuments({ ...query, status: 'ACTIVE' }),
+      Customer.countDocuments({ ...query, status: { $in: ['CLOSED', 'SETTLED', 'INACTIVE'] } }),
+      Loan.countDocuments({ ...loanScopeQuery, status: { $in: ['ACTIVE', 'OVERDUE'] } }),
+      Loan.countDocuments({ ...loanScopeQuery, status: 'CLOSED' })
+    ]);
 
     const customers = await Customer.find(query)
       .populate('branchId', 'name code')
@@ -170,9 +172,7 @@ router.post('/', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Reques
     }
 
     const branch = await Branch.findById(branchId);
-    const bCode = branch?.code === 'MDKM' ? 'MDKM' : 'PL';
-    const seq = (await Customer.countDocuments()) + 1;
-    const customerId = `ATH-${bCode}-CUST-${String(seq).padStart(4, '0')}`;
+    const customerId = await getNextCustomerId(branch?.code || 'PL');
 
     const customer = await Customer.create({
       customerId,

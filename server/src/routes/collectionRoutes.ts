@@ -50,6 +50,115 @@ export function getRouteDateForWeekday(weekday: string, refDate: Date = new Date
   return { targetDate, startOfDay, endOfDay };
 }
 
+function buildRouteMemberRows(
+  loans: any[],
+  routePayments: any[],
+  installmentsByLoan: Map<string, any[]>,
+  startOfDay: Date,
+  endOfDay: Date,
+  todayMidnight: Date,
+  collectionDay?: string
+) {
+  let groupExpected = 0;
+  let groupOutstanding = 0;
+  const memberRows: any[] = [];
+
+  for (const l of loans) {
+    groupOutstanding += (l.outstandingTotal || 0);
+
+    const loanPayments = routePayments.filter(p => String(p.loanId) === String(l._id));
+    const paidOnRouteDate = loanPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    const loanInsts = installmentsByLoan.get(String(l._id)) || [];
+
+    let targetInst = loanInsts.find(i => {
+      const d = new Date(i.dueDate).getTime();
+      return d >= startOfDay.getTime() && d <= endOfDay.getTime();
+    });
+
+    if (!targetInst) {
+      targetInst = loanInsts.find(i => {
+        if (!i.paidDate) return false;
+        const d = new Date(i.paidDate).getTime();
+        return d >= startOfDay.getTime() && d <= endOfDay.getTime();
+      });
+    }
+
+    let instToDisplay = targetInst;
+    let isPaidToday = false;
+    let expAmt = 0;
+    let instStatus: string = 'PENDING';
+    let instExpected = 0;
+
+    if (targetInst) {
+      instExpected = targetInst.expectedAmount;
+      groupExpected += targetInst.expectedAmount;
+
+      const targetDueMidnight = new Date(targetInst.dueDate);
+      targetDueMidnight.setHours(0, 0, 0, 0);
+
+      if (targetInst.status === 'PAID') {
+        isPaidToday = true;
+        instStatus = 'PAID';
+        expAmt = 0;
+      } else if (targetInst.status === 'PARTIAL') {
+        isPaidToday = false;
+        instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PARTIAL';
+        expAmt = targetInst.balanceAmount;
+      } else {
+        isPaidToday = false;
+        instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PENDING';
+        expAmt = targetInst.balanceAmount;
+      }
+    } else {
+      if (l.status === 'CLOSED' || (l.outstandingTotal || 0) <= 0) {
+        const lastPaidInst = loanInsts.length > 0 ? loanInsts[loanInsts.length - 1] : null;
+        instToDisplay = lastPaidInst;
+        instStatus = 'PAID';
+        isPaidToday = false;
+        expAmt = 0;
+        instExpected = 0;
+      } else {
+        const nextPendingInst = loanInsts.find(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
+        instToDisplay = nextPendingInst;
+        if (nextPendingInst) {
+          const nextDueMidnight = new Date(nextPendingInst.dueDate);
+          nextDueMidnight.setHours(0, 0, 0, 0);
+          instStatus = nextPendingInst.status === 'PAID' ? 'PAID' : (nextDueMidnight < todayMidnight ? 'OVERDUE' : nextPendingInst.status);
+        } else {
+          instStatus = l.status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
+        }
+        expAmt = nextPendingInst ? nextPendingInst.balanceAmount : 0;
+        instExpected = nextPendingInst ? nextPendingInst.expectedAmount : 0;
+        groupExpected += expAmt;
+      }
+    }
+
+    memberRows.push({
+      loanId: l._id,
+      loanNumber: l.loanNumber,
+      customer: l.customerId,
+      installmentNumber: instToDisplay?.installmentNumber || null,
+      installmentId: instToDisplay?._id || null,
+      installmentStatus: instStatus,
+      collectionDay: collectionDay || l.collectionDay,
+      isPaidToday,
+      installmentExpected: instExpected,
+      installmentPaid: instToDisplay?.paidAmount || (isPaidToday ? instExpected : 0),
+      expectedAmount: expAmt,
+      todayPaid: paidOnRouteDate > 0 ? paidOnRouteDate : (isPaidToday ? instExpected : 0),
+      outstandingTotal: l.outstandingTotal,
+      tenureWeeks: l.tenureWeeks
+    });
+  }
+
+  return {
+    groupExpected,
+    groupOutstanding,
+    memberRows
+  };
+}
+
 // Daily route collection sheet
 router.get('/daily-sheet', async (req: Request, res: Response) => {
   try {
@@ -90,143 +199,100 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
       query.branchId = branchId;
     }
 
-    const groups = await Group.find(query).sort({ groupCode: 1 });
+    const groups = await Group.find(query).sort({ groupCode: 1 }).lean();
+    if (groups.length === 0) {
+      res.json({
+        success: true,
+        weekday: weekdayStr,
+        targetDate: targetDate.toISOString().split('T')[0],
+        groups: []
+      });
+      return;
+    }
+
+    const groupIds = groups.map(g => g._id);
+
+    // BATCH 1: Fetch all loans for these groups in a single query
+    const loanQuery: any = { groupId: { $in: groupIds }, status: { $in: ['ACTIVE', 'OVERDUE'] } };
+    if (req.user?.role === 'COLLECTION_STAFF') {
+      const staffId = req.user?.id || req.user?._id;
+      const staffUsername = req.user?.username || '';
+      const staffName = req.user?.name || '';
+      const nameParts = staffName.split(' ').filter(Boolean);
+      const nameRegexes = [
+        new RegExp(`^${staffUsername}$`, 'i'),
+        new RegExp(`^${staffName}$`, 'i'),
+        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
+      ];
+
+      loanQuery.$or = [
+        { assignedStaffId: staffId },
+        { assignedStaffName: { $in: nameRegexes } },
+        { assignedStaffId: null }
+      ];
+    }
+
+    const allLoans = await Loan.find(loanQuery)
+      .populate('customerId', 'name phone customerId')
+      .lean();
+
+    // BATCH 2: Fetch all route payments for these groups on target date in a single query
+    const allRoutePayments = await Payment.find({
+      groupId: { $in: groupIds },
+      paymentDate: { $gte: startOfDay, $lte: endOfDay }
+    }).lean();
+
+    // BATCH 3: Fetch all installments for all retrieved loans in a single query
+    const allLoanIds = allLoans.map(l => l._id);
+    const allInstallments = await Installment.find({
+      loanId: { $in: allLoanIds }
+    }).sort({ installmentNumber: 1 }).lean();
+
+    // Index in memory for instant O(1) lookups
+    const loansByGroup = new Map<string, any[]>();
+    allLoans.forEach(l => {
+      const gid = String(l.groupId);
+      if (!loansByGroup.has(gid)) loansByGroup.set(gid, []);
+      loansByGroup.get(gid)!.push(l);
+    });
+
+    const paymentsByGroup = new Map<string, any[]>();
+    allRoutePayments.forEach(p => {
+      const gid = String(p.groupId);
+      if (!paymentsByGroup.has(gid)) paymentsByGroup.set(gid, []);
+      paymentsByGroup.get(gid)!.push(p);
+    });
+
+    const installmentsByLoan = new Map<string, any[]>();
+    allInstallments.forEach(i => {
+      const lid = String(i.loanId);
+      if (!installmentsByLoan.has(lid)) installmentsByLoan.set(lid, []);
+      installmentsByLoan.get(lid)!.push(i);
+    });
+
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+
     const groupSummaries = [];
 
     for (const grp of groups) {
-      const loanQuery: any = { groupId: grp._id, status: { $in: ['ACTIVE', 'OVERDUE'] } };
-      if (req.user?.role === 'COLLECTION_STAFF') {
-        const staffId = req.user?.id || req.user?._id;
-        const staffUsername = req.user?.username || '';
-        const staffName = req.user?.name || '';
-        const nameParts = staffName.split(' ').filter(Boolean);
-        const nameRegexes = [
-          new RegExp(`^${staffUsername}$`, 'i'),
-          new RegExp(`^${staffName}$`, 'i'),
-          ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-        ];
-
-        loanQuery.$or = [
-          { assignedStaffId: staffId },
-          { assignedStaffName: { $in: nameRegexes } },
-          { assignedStaffId: null }
-        ];
-      }
-
-      const loans = await Loan.find(loanQuery)
-        .populate('customerId', 'name phone customerId');
-
-      if (req.user?.role === 'COLLECTION_STAFF' && loans.length === 0) {
+      const grpLoans = loansByGroup.get(String(grp._id)) || [];
+      if (req.user?.role === 'COLLECTION_STAFF' && grpLoans.length === 0) {
         continue;
       }
 
-      let groupExpected = 0;
-      let groupCollected = 0;
-      let groupOutstanding = 0;
+      const grpPayments = paymentsByGroup.get(String(grp._id)) || [];
+      const groupCollected = grpPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-      // Calculate collections received on this route date for this group
-      const routePayments = await Payment.find({
-        groupId: grp._id,
-        paymentDate: { $gte: startOfDay, $lte: endOfDay }
-      });
-      groupCollected = routePayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-      const memberRows = [];
-
-      for (const l of loans) {
-        groupOutstanding += l.outstandingTotal;
-
-        const loanPayments = routePayments.filter(p => String(p.loanId) === String(l._id));
-        const paidOnRouteDate = loanPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-        // Find the installment scheduled or paid for this route date
-        let targetInst = await Installment.findOne({
-          loanId: l._id,
-          dueDate: { $gte: startOfDay, $lte: endOfDay }
-        });
-
-        if (!targetInst) {
-          targetInst = await Installment.findOne({
-            loanId: l._id,
-            paidDate: { $gte: startOfDay, $lte: endOfDay }
-          });
-        }
-
-        let instToDisplay = targetInst;
-        let isPaidToday = false;
-        let expAmt = 0;
-        let instStatus: string = 'PENDING';
-        let instExpected = 0;
-
-        const todayMidnight = new Date();
-        todayMidnight.setHours(0, 0, 0, 0);
-
-        if (targetInst) {
-          instExpected = targetInst.expectedAmount;
-          groupExpected += targetInst.expectedAmount;
-
-          const targetDueMidnight = new Date(targetInst.dueDate);
-          targetDueMidnight.setHours(0, 0, 0, 0);
-
-          if (targetInst.status === 'PAID') {
-            isPaidToday = true;
-            instStatus = 'PAID';
-            expAmt = 0;
-          } else if (targetInst.status === 'PARTIAL') {
-            isPaidToday = false;
-            instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PARTIAL';
-            expAmt = targetInst.balanceAmount;
-          } else {
-            isPaidToday = false;
-            instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PENDING';
-            expAmt = targetInst.balanceAmount;
-          }
-        } else {
-          // If no installment was specifically scheduled for this date (e.g. loan closed early or advance)
-          if (l.status === 'CLOSED' || l.outstandingTotal <= 0) {
-            const lastPaidInst = await Installment.findOne({ loanId: l._id }).sort({ installmentNumber: -1 });
-            instToDisplay = lastPaidInst;
-            instStatus = 'PAID';
-            isPaidToday = false;
-            expAmt = 0;
-            instExpected = 0;
-          } else {
-            const nextPendingInst = await Installment.findOne({
-              loanId: l._id,
-              status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-            }).sort({ installmentNumber: 1 });
-
-            instToDisplay = nextPendingInst;
-            if (nextPendingInst) {
-              const nextDueMidnight = new Date(nextPendingInst.dueDate);
-              nextDueMidnight.setHours(0, 0, 0, 0);
-              instStatus = nextPendingInst.status === 'PAID' ? 'PAID' : (nextDueMidnight < todayMidnight ? 'OVERDUE' : nextPendingInst.status);
-            } else {
-              instStatus = l.status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
-            }
-            expAmt = nextPendingInst ? nextPendingInst.balanceAmount : 0;
-            instExpected = nextPendingInst ? nextPendingInst.expectedAmount : 0;
-            groupExpected += expAmt;
-          }
-        }
-
-        memberRows.push({
-          loanId: l._id,
-          loanNumber: l.loanNumber,
-          customer: l.customerId,
-          installmentNumber: instToDisplay?.installmentNumber || null,
-          installmentId: instToDisplay?._id || null,
-          installmentStatus: instStatus,
-          collectionDay: grp.collectionDay,
-          isPaidToday,
-          installmentExpected: instExpected,
-          installmentPaid: instToDisplay?.paidAmount || (isPaidToday ? instExpected : 0),
-          expectedAmount: expAmt,
-          todayPaid: paidOnRouteDate > 0 ? paidOnRouteDate : (isPaidToday ? instExpected : 0),
-          outstandingTotal: l.outstandingTotal,
-          tenureWeeks: l.tenureWeeks
-        });
-      }
+      const { groupExpected, groupOutstanding, memberRows } = buildRouteMemberRows(
+        grpLoans,
+        grpPayments,
+        installmentsByLoan,
+        startOfDay,
+        endOfDay,
+        todayMidnight,
+        grp.collectionDay
+      );
 
       groupSummaries.push({
         group: grp,
@@ -286,6 +352,70 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
     }
 
     const weekdays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+    const groups = await Group.find({ ...baseQuery, collectionDay: { $in: weekdays } }).sort({ groupCode: 1 }).lean();
+    const groupIds = groups.map(g => g._id);
+
+    // Batch loans for all weekly groups in a single query
+    const loanQuery: any = { groupId: { $in: groupIds }, status: { $in: ['ACTIVE', 'OVERDUE'] } };
+    if (req.user?.role === 'COLLECTION_STAFF') {
+      const staffId = req.user?.id || req.user?._id;
+      const staffUsername = req.user?.username || '';
+      const staffName = req.user?.name || '';
+      const nameParts = staffName.split(' ').filter(Boolean);
+      const nameRegexes = [
+        new RegExp(`^${staffUsername}$`, 'i'),
+        new RegExp(`^${staffName}$`, 'i'),
+        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
+      ];
+
+      loanQuery.$or = [
+        { assignedStaffId: staffId },
+        { assignedStaffName: { $in: nameRegexes } },
+        { assignedStaffId: null }
+      ];
+    }
+
+    const allLoans = await Loan.find(loanQuery).populate('customerId', 'name phone customerId').lean();
+    const allLoanIds = allLoans.map(l => l._id);
+
+    // Determine week boundaries (Monday startOfDay to Thursday endOfDay)
+    const { startOfDay: weekStart } = getRouteDateForWeekday('MONDAY');
+    const { endOfDay: weekEnd } = getRouteDateForWeekday('THURSDAY');
+
+    const allPayments = await Payment.find({
+      groupId: { $in: groupIds },
+      paymentDate: { $gte: weekStart, $lte: weekEnd }
+    }).lean();
+
+    const allInstallments = await Installment.find({
+      loanId: { $in: allLoanIds }
+    }).sort({ installmentNumber: 1 }).lean();
+
+    // Index by group / loan
+    const loansByGroup = new Map<string, any[]>();
+    allLoans.forEach(l => {
+      const gid = String(l.groupId);
+      if (!loansByGroup.has(gid)) loansByGroup.set(gid, []);
+      loansByGroup.get(gid)!.push(l);
+    });
+
+    const paymentsByGroup = new Map<string, any[]>();
+    allPayments.forEach(p => {
+      const gid = String(p.groupId);
+      if (!paymentsByGroup.has(gid)) paymentsByGroup.set(gid, []);
+      paymentsByGroup.get(gid)!.push(p);
+    });
+
+    const installmentsByLoan = new Map<string, any[]>();
+    allInstallments.forEach(i => {
+      const lid = String(i.loanId);
+      if (!installmentsByLoan.has(lid)) installmentsByLoan.set(lid, []);
+      installmentsByLoan.get(lid)!.push(i);
+    });
+
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+
     const daysData: Record<string, any> = {};
     const allGroupsList: any[] = [];
     let weeklyExpected = 0;
@@ -295,133 +425,51 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
 
     for (const day of weekdays) {
       const { startOfDay, endOfDay } = getRouteDateForWeekday(day);
-      const dayQuery = { ...baseQuery, collectionDay: day };
-      const groups = await Group.find(dayQuery).sort({ groupCode: 1 });
+      const dayGroups = groups.filter(g => g.collectionDay === day);
       const dayGroupSummaries: any[] = [];
       let dayExpected = 0;
       let dayCollected = 0;
       let dayMembers = 0;
 
-      for (const grp of groups) {
-        const loanQuery: any = { groupId: grp._id, status: { $in: ['ACTIVE', 'OVERDUE'] } };
-        const loans = await Loan.find(loanQuery).populate('customerId', 'name phone customerId');
+      for (const grp of dayGroups) {
+        const grpLoans = loansByGroup.get(String(grp._id)) || [];
+        if (req.user?.role === 'COLLECTION_STAFF' && grpLoans.length === 0) {
+          continue;
+        }
 
-        let grpExpected = 0;
-        let grpOutstanding = 0;
-
-        const dayPayments = await Payment.find({
-          groupId: grp._id,
-          paymentDate: { $gte: startOfDay, $lte: endOfDay }
+        const grpAllPayments = paymentsByGroup.get(String(grp._id)) || [];
+        const dayPayments = grpAllPayments.filter(p => {
+          const t = new Date(p.paymentDate).getTime();
+          return t >= startOfDay.getTime() && t <= endOfDay.getTime();
         });
         const grpColl = dayPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-        const memberRows = [];
-        for (const l of loans) {
-          grpOutstanding += l.outstandingTotal;
-
-          const loanPayments = dayPayments.filter(p => String(p.loanId) === String(l._id));
-          const paidOnDay = loanPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-          let targetInst = await Installment.findOne({
-            loanId: l._id,
-            dueDate: { $gte: startOfDay, $lte: endOfDay }
-          });
-          if (!targetInst) {
-            targetInst = await Installment.findOne({
-              loanId: l._id,
-              paidDate: { $gte: startOfDay, $lte: endOfDay }
-            });
-          }
-
-          let instToDisplay = targetInst;
-          let isPaidToday = false;
-          let expAmt = 0;
-          let instStatus: string = 'PENDING';
-          let instExpected = 0;
-
-          const todayMidnight = new Date();
-          todayMidnight.setHours(0, 0, 0, 0);
-
-          if (targetInst) {
-            instExpected = targetInst.expectedAmount;
-            grpExpected += targetInst.expectedAmount;
-
-            const targetDueMidnight = new Date(targetInst.dueDate);
-            targetDueMidnight.setHours(0, 0, 0, 0);
-
-            if (targetInst.status === 'PAID') {
-              isPaidToday = true;
-              instStatus = 'PAID';
-              expAmt = 0;
-            } else if (targetInst.status === 'PARTIAL') {
-              isPaidToday = false;
-              instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PARTIAL';
-              expAmt = targetInst.balanceAmount;
-            } else {
-              isPaidToday = false;
-              instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PENDING';
-              expAmt = targetInst.balanceAmount;
-            }
-          } else {
-            if (l.status === 'CLOSED' || l.outstandingTotal <= 0) {
-              const lastPaid = await Installment.findOne({ loanId: l._id }).sort({ installmentNumber: -1 });
-              instToDisplay = lastPaid;
-              instStatus = 'PAID';
-              isPaidToday = false;
-              expAmt = 0;
-              instExpected = 0;
-            } else {
-              const nextPending = await Installment.findOne({
-                loanId: l._id,
-                status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-              }).sort({ installmentNumber: 1 });
-              instToDisplay = nextPending;
-              if (nextPending) {
-                const nextDueMidnight = new Date(nextPending.dueDate);
-                nextDueMidnight.setHours(0, 0, 0, 0);
-                instStatus = nextPending.status === 'PAID' ? 'PAID' : (nextDueMidnight < todayMidnight ? 'OVERDUE' : nextPending.status);
-              } else {
-                instStatus = l.status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
-              }
-              expAmt = nextPending ? nextPending.balanceAmount : 0;
-              instExpected = nextPending ? nextPending.expectedAmount : 0;
-              grpExpected += expAmt;
-            }
-          }
-
-          memberRows.push({
-            loanId: l._id,
-            loanNumber: l.loanNumber,
-            customer: l.customerId,
-            installmentNumber: instToDisplay?.installmentNumber || null,
-            installmentId: instToDisplay?._id || null,
-            installmentStatus: instStatus,
-            isPaidToday,
-            installmentExpected: instExpected,
-            installmentPaid: instToDisplay?.paidAmount || (isPaidToday ? instExpected : 0),
-            expectedAmount: expAmt,
-            todayPaid: paidOnDay > 0 ? paidOnDay : (isPaidToday ? instExpected : 0),
-            outstandingTotal: l.outstandingTotal,
-            tenureWeeks: l.tenureWeeks
-          });
-        }
+        const { groupExpected, groupOutstanding, memberRows } = buildRouteMemberRows(
+          grpLoans,
+          dayPayments,
+          installmentsByLoan,
+          startOfDay,
+          endOfDay,
+          todayMidnight,
+          day
+        );
 
         const summaryItem = {
           group: grp,
           collectionDay: day,
-          expectedTotal: grpExpected,
+          expectedTotal: groupExpected,
           collectedToday: grpColl,
-          outstandingTotal: grpOutstanding,
+          outstandingTotal: groupOutstanding,
           members: memberRows
         };
 
         dayGroupSummaries.push(summaryItem);
         allGroupsList.push(summaryItem);
 
-        dayExpected += grpExpected;
+        dayExpected += groupExpected;
         dayCollected += grpColl;
         dayMembers += memberRows.length;
-        weeklyOutstanding += grpOutstanding;
+        weeklyOutstanding += groupOutstanding;
       }
 
       weeklyExpected += dayExpected;
@@ -432,7 +480,7 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
         expected: dayExpected,
         collected: dayCollected,
         remaining: Math.max(0, dayExpected - dayCollected),
-        groupsCount: groups.length,
+        groupsCount: dayGroups.length,
         membersCount: dayMembers,
         groups: dayGroupSummaries
       };
@@ -473,40 +521,80 @@ router.get('/staff-summary', async (req: Request, res: Response) => {
     const targetDay = (weekday && weekday !== 'WEEKLY' && weekday !== 'ALL') ? String(weekday).toUpperCase() : 'WEDNESDAY';
     const { startOfDay, endOfDay } = getRouteDateForWeekday(targetDay);
 
+    const groupDayFilter: any = {};
+    if (weekday && weekday !== 'WEEKLY' && weekday !== 'ALL') {
+      groupDayFilter.collectionDay = weekday;
+    }
+
+    // BATCH: Fetch all candidate groups, loans, payments, and installments upfront in 4 single queries
+    const allBranchGroups = await Group.find({
+      ...branchFilter,
+      ...groupDayFilter
+    }).sort({ collectionDay: 1, groupCode: 1 }).lean();
+
+    const allBranchGroupIds = allBranchGroups.map(g => g._id);
+
+    const allBranchLoans = await Loan.find({
+      groupId: { $in: allBranchGroupIds },
+      status: { $in: ['ACTIVE', 'OVERDUE'] }
+    }).lean();
+
+    const allBranchLoanIds = allBranchLoans.map(l => l._id);
+
+    const allTodayPayments = await Payment.find({
+      groupId: { $in: allBranchGroupIds },
+      paymentDate: { $gte: startOfDay, $lte: endOfDay }
+    }).lean();
+
+    const allActiveInsts = await Installment.find({
+      loanId: { $in: allBranchLoanIds },
+      status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
+    }).sort({ installmentNumber: 1 }).lean();
+
+    // Map in memory
+    const loansByGroupId = new Map<string, any[]>();
+    allBranchLoans.forEach(l => {
+      const gid = String(l.groupId);
+      if (!loansByGroupId.has(gid)) loansByGroupId.set(gid, []);
+      loansByGroupId.get(gid)!.push(l);
+    });
+
+    const paymentsByGroupId = new Map<string, any[]>();
+    allTodayPayments.forEach(p => {
+      const gid = String(p.groupId);
+      if (!paymentsByGroupId.has(gid)) paymentsByGroupId.set(gid, []);
+      paymentsByGroupId.get(gid)!.push(p);
+    });
+
+    const nextInstByLoanId = new Map<string, any>();
+    allActiveInsts.forEach(i => {
+      const lid = String(i.loanId);
+      if (!nextInstByLoanId.has(lid)) {
+        nextInstByLoanId.set(lid, i);
+      }
+    });
+
     const staffSummaries = [];
 
     for (const staff of staffList) {
-      const staffId = staff._id;
-      const staffName = staff.name;
+      const staffIdStr = String(staff._id);
+      const staffUsername = (staff.username || '').toLowerCase();
+      const staffName = (staff.name || '').toLowerCase();
       const nameParts = staffName.split(' ').filter(Boolean);
-      const nameRegexes = [
-        new RegExp(`^${staff.username}$`, 'i'),
-        new RegExp(`^${staffName}$`, 'i'),
-        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-      ];
 
-      const groupDayFilter: any = {};
-      if (weekday && weekday !== 'WEEKLY' && weekday !== 'ALL') {
-        groupDayFilter.collectionDay = weekday;
-      }
+      const matchesStaff = (nameToCheck: string) => {
+        if (!nameToCheck) return false;
+        const low = nameToCheck.toLowerCase().trim();
+        return low === staffUsername || low === staffName || nameParts.some(p => low.includes(p));
+      };
 
-      const assignedLoanGroupIds = await Loan.find({
-        $or: [
-          { assignedStaffId: staffId },
-          { assignedStaffName: { $in: nameRegexes } }
-        ],
-        status: { $in: ['ACTIVE', 'OVERDUE'] }
-      }).distinct('groupId');
-
-      const groups = await Group.find({
-        ...branchFilter,
-        ...groupDayFilter,
-        $or: [
-          { staffId: staffId },
-          { staffName: { $in: nameRegexes } },
-          { _id: { $in: assignedLoanGroupIds } }
-        ]
-      }).sort({ collectionDay: 1, groupCode: 1 });
+      // Filter groups assigned to this staff
+      const staffGroups = allBranchGroups.filter(grp => {
+        if (grp.staffId && String(grp.staffId) === staffIdStr) return true;
+        if (grp.staffName && matchesStaff(grp.staffName)) return true;
+        const grpLoans = loansByGroupId.get(String(grp._id)) || [];
+        return grpLoans.some(l => (l.assignedStaffId && String(l.assignedStaffId) === staffIdStr) || (l.assignedStaffName && matchesStaff(l.assignedStaffName)));
+      });
 
       let staffExpected = 0;
       let staffCollected = 0;
@@ -514,26 +602,18 @@ router.get('/staff-summary', async (req: Request, res: Response) => {
       let staffTotalOutstanding = 0;
       const groupBreakdowns = [];
 
-      for (const grp of groups) {
-        const loans = await Loan.find({
-          groupId: grp._id,
-          status: { $in: ['ACTIVE', 'OVERDUE'] }
-        }).populate('customerId', 'name phone');
+      for (const grp of staffGroups) {
+        const loans = loansByGroupId.get(String(grp._id)) || [];
+        const todayGrpPayments = paymentsByGroupId.get(String(grp._id)) || [];
+        const grpColl = todayGrpPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
         let grpExp = 0;
         let grpOut = 0;
 
-        const todayGrpPayments = await Payment.find({
-          groupId: grp._id,
-          paymentDate: { $gte: startOfDay, $lte: endOfDay }
-        });
-        const grpColl = todayGrpPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
         for (const l of loans) {
-          const nextInst = await Installment.findOne({ loanId: l._id, status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] } })
-            .sort({ installmentNumber: 1 });
+          const nextInst = nextInstByLoanId.get(String(l._id));
           grpExp += nextInst ? nextInst.balanceAmount : 0;
-          grpOut += l.outstandingTotal;
+          grpOut += (l.outstandingTotal || 0);
         }
 
         staffExpected += grpExp;
@@ -560,7 +640,7 @@ router.get('/staff-summary', async (req: Request, res: Response) => {
         username: staff.username,
         role: staff.role,
         phone: staff.phone || '',
-        totalGroups: groups.length,
+        totalGroups: staffGroups.length,
         totalBorrowers: staffTotalBorrowers,
         expectedAmount: staffExpected,
         collectedToday: staffCollected,

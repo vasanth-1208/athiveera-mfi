@@ -1,15 +1,18 @@
 import { Router, Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { Loan } from '../models/Loan';
 import { Customer } from '../models/Customer';
 import { Group } from '../models/Group';
 import { Branch } from '../models/Branch';
 import { Installment } from '../models/Installment';
 import { Payment } from '../models/Payment';
+import { FollowUp } from '../models/FollowUp';
 import { User } from '../models/User';
 import { calculateLoanSchedule, getNextWeekdayDate } from '../services/loanCalculator';
 import { calculateEarlySettlement } from '../services/earlySettlementService';
 import { recordCashbookEntry } from '../services/cashbookService';
 import { getNextReceiptNumber } from '../services/receiptService';
+import { getNextCustomerId } from '../services/customerService';
 import { authenticate } from '../middleware/auth';
 import { enforceBranchScope, requireRole } from '../middleware/roles';
 import { LOAN_PRODUCT_PRESETS } from '../constants/loanProducts';
@@ -484,7 +487,52 @@ router.put('/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Requ
       loanCategory
     } = req.body;
 
+    // Detect Customer ID remapping from either req.body.customerId or embedded inside loanNumber
+    const oldCustomerId = loan.customerId;
+    let targetCustomer: any = null;
+
+    let detectedCustId: string | null = null;
+    if (loanNumber && String(loanNumber).trim()) {
+      const match = String(loanNumber).trim().match(/ATH-[A-Z]+-CUST-\d+/i);
+      if (match) {
+        detectedCustId = match[0].toUpperCase();
+      } else {
+        const shortMatch = String(loanNumber).trim().match(/CUST-\d+/i);
+        if (shortMatch) {
+          detectedCustId = shortMatch[0].toUpperCase();
+        }
+      }
+    }
+
+    if (req.body.customerId) {
+      const cid = String(req.body.customerId).trim();
+      if (mongoose.Types.ObjectId.isValid(cid)) {
+        targetCustomer = await Customer.findById(cid);
+      }
+      if (!targetCustomer) {
+        targetCustomer = await Customer.findOne({ customerId: cid.toUpperCase() });
+      }
+    } else if (detectedCustId) {
+      targetCustomer = await Customer.findOne({
+        $or: [
+          { customerId: detectedCustId },
+          { customerId: { $regex: detectedCustId + '$', $options: 'i' } }
+        ]
+      });
+    }
+
+    const isCustomerRemapped = targetCustomer && String(targetCustomer._id) !== String(oldCustomerId);
+
     if (loanNumber) loan.loanNumber = loanNumber;
+    if (isCustomerRemapped) {
+      loan.customerId = targetCustomer._id;
+      if (!customerName || customerName === loan.customerName) {
+        loan.customerName = targetCustomer.name;
+      }
+      if (!customerPhone || customerPhone === loan.customerPhone) {
+        loan.customerPhone = targetCustomer.phone;
+      }
+    }
     if (principal !== undefined) loan.principal = Number(principal);
     if (interestAmount !== undefined) loan.interestAmount = Number(interestAmount);
     if (docCharges !== undefined) loan.docCharges = Number(docCharges);
@@ -508,7 +556,64 @@ router.put('/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Requ
 
     await loan.save();
 
-    if (loan.customerId) {
+    if (isCustomerRemapped && targetCustomer) {
+      // 1. Re-map all installments of this loan to the new customer
+      await Installment.updateMany(
+        { loanId: loan._id },
+        { $set: { customerId: targetCustomer._id } }
+      );
+
+      // 2. Re-map all payments of this loan to the new customer
+      await Payment.updateMany(
+        { loanId: loan._id },
+        { $set: { customerId: targetCustomer._id } }
+      );
+
+      // 3. Re-map all followups
+      await FollowUp.updateMany(
+        { loanId: loan._id },
+        { $set: { customerId: targetCustomer._id } }
+      );
+
+      // 4. Update the new customer with active group and status
+      if (loan.status === 'ACTIVE' || loan.status === 'OVERDUE') {
+        targetCustomer.activeGroupId = loan.groupId;
+        targetCustomer.status = 'ACTIVE';
+      }
+      if (loan.area && !targetCustomer.area) {
+        targetCustomer.area = loan.area;
+      }
+      await targetCustomer.save();
+
+      // 5. Update group head if applicable
+      if (loan.groupId) {
+        const grp = await Group.findById(loan.groupId);
+        if (grp && (String(grp.headCustomerId) === String(oldCustomerId) || grp.headName === loan.customerName)) {
+          grp.headCustomerId = targetCustomer._id;
+          grp.headName = targetCustomer.name;
+          if (targetCustomer.phone) grp.headPhone = targetCustomer.phone;
+          await grp.save();
+        }
+      }
+
+      // 6. Handle old customer activeGroupId if they have no other active loans
+      if (oldCustomerId) {
+        const otherActiveLoans = await Loan.find({
+          customerId: oldCustomerId,
+          status: { $in: ['ACTIVE', 'OVERDUE'] },
+          _id: { $ne: loan._id }
+        });
+        if (otherActiveLoans.length === 0) {
+          await Customer.findByIdAndUpdate(oldCustomerId, {
+            activeGroupId: null
+          });
+        } else {
+          await Customer.findByIdAndUpdate(oldCustomerId, {
+            activeGroupId: otherActiveLoans[0].groupId
+          });
+        }
+      }
+    } else if (loan.customerId) {
       const custUpdates: any = {};
       if (customerName) custUpdates.name = customerName;
       if (customerPhone) custUpdates.phone = customerPhone;
@@ -978,9 +1083,7 @@ router.post('/create-manager-loan', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'),
     } else {
       // Create new customer
       const branch = await Branch.findById(branchId);
-      const bCode = branch?.code === 'MDKM' ? 'MDKM' : 'PL';
-      const custCount = (await Customer.countDocuments()) + 1;
-      const newCustId = customCustomerId || `ATH-${bCode}-CUST-${String(custCount).padStart(4, '0')}`;
+      const newCustId = customCustomerId || await getNextCustomerId(branch?.code || 'PL');
       customer = await Customer.create({
         customerId: newCustId,
         name: customerName.trim(),

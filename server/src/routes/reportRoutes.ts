@@ -44,30 +44,39 @@ router.get('/daily', async (req: Request, res: Response) => {
     const baseQuery: any = {};
     if (branchId) baseQuery.branchId = branchId;
 
-    const payments = await Payment.find({
-      ...baseQuery,
-      paymentDate: { $gte: startOfDay, $lte: endOfDay }
-    })
-      .populate('customerId', 'name phone')
-      .populate('groupId', 'name collectionDay groupCode')
-      .populate('collectorId', 'name')
-      .populate('branchId', 'name')
-      .sort({ createdAt: -1 });
+    // Parallelize fetch of payments, disbursements, expenses, and route groups
+    const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+    const weekdayStr = dayNames[targetDate.getDay()];
 
-    const disbursements = await Loan.find({
-      ...baseQuery,
-      disbursedDate: { $gte: startOfDay, $lte: endOfDay }
-    })
-      .populate('customerId', 'name phone')
-      .populate('groupId', 'name groupCode')
-      .populate('branchId', 'name')
-      .sort({ createdAt: -1 });
-
-    const expenses = await Expense.find({
-      ...baseQuery,
-      expenseDate: { $gte: startOfDay, $lte: endOfDay },
-      status: 'APPROVED'
-    }).populate('branchId', 'name');
+    const [payments, disbursements, expenses, routeGroups] = await Promise.all([
+      Payment.find({
+        ...baseQuery,
+        paymentDate: { $gte: startOfDay, $lte: endOfDay }
+      })
+        .populate('customerId', 'name phone')
+        .populate('groupId', 'name collectionDay groupCode')
+        .populate('collectorId', 'name')
+        .populate('branchId', 'name')
+        .sort({ createdAt: -1 }),
+      Loan.find({
+        ...baseQuery,
+        disbursedDate: { $gte: startOfDay, $lte: endOfDay }
+      })
+        .populate('customerId', 'name phone')
+        .populate('groupId', 'name groupCode')
+        .populate('branchId', 'name')
+        .sort({ createdAt: -1 }),
+      Expense.find({
+        ...baseQuery,
+        expenseDate: { $gte: startOfDay, $lte: endOfDay },
+        status: 'APPROVED'
+      }).populate('branchId', 'name'),
+      Group.find({
+        ...baseQuery,
+        collectionDay: weekdayStr,
+        status: { $ne: 'CLOSED' }
+      }).select('_id').lean()
+    ]);
 
     const totalCollected = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalCash = payments.filter(p => p.paymentMethod === 'CASH').reduce((sum, p) => sum + (p.amount || 0), 0);
@@ -75,31 +84,49 @@ router.get('/daily', async (req: Request, res: Response) => {
     const totalDisbursed = disbursements.reduce((sum, d) => sum + (d.principal || 0), 0);
     const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
-    // Calculate daily route expected due and shortfall for targetDate
-    const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
-    const weekdayStr = dayNames[targetDate.getDay()];
-    const routeGroups = await Group.find({
-      ...baseQuery,
-      collectionDay: weekdayStr,
-      status: { $ne: 'CLOSED' }
-    }).select('_id');
+    // Calculate daily route expected due and shortfall for targetDate in a single batch query
     const routeGroupIds = routeGroups.map(g => g._id);
-
     const activeRouteLoans = await Loan.find({
       groupId: { $in: routeGroupIds },
       status: { $in: ['ACTIVE', 'OVERDUE'] }
-    }).select('_id');
+    }).select('_id').lean();
+    const activeRouteLoanIds = activeRouteLoans.map(l => l._id);
 
+    const targetInstallments = await Installment.find({
+      loanId: { $in: activeRouteLoanIds },
+      $or: [
+        { dueDate: { $gte: startOfDay, $lte: endOfDay } },
+        { paidDate: { $gte: startOfDay, $lte: endOfDay } }
+      ]
+    }).lean();
+
+    const instMap = new Map<string, any[]>();
+    for (const inst of targetInstallments) {
+      const k = String(inst.loanId);
+      let arr = instMap.get(k);
+      if (!arr) {
+        arr = [];
+        instMap.set(k, arr);
+      }
+      arr.push(inst);
+    }
+
+    const dayStartTs = startOfDay.getTime();
+    const dayEndTs = endOfDay.getTime();
     let expectedDue = 0;
-    for (const l of activeRouteLoans) {
-      let targetInst = await Installment.findOne({
-        loanId: l._id,
-        dueDate: { $gte: startOfDay, $lte: endOfDay }
+
+    for (const lId of activeRouteLoanIds) {
+      const loanInsts = instMap.get(String(lId)) || [];
+      let targetInst = loanInsts.find(i => {
+        if (!i.dueDate) return false;
+        const t = new Date(i.dueDate).getTime();
+        return t >= dayStartTs && t <= dayEndTs;
       });
       if (!targetInst) {
-        targetInst = await Installment.findOne({
-          loanId: l._id,
-          paidDate: { $gte: startOfDay, $lte: endOfDay }
+        targetInst = loanInsts.find(i => {
+          if (!i.paidDate) return false;
+          const t = new Date(i.paidDate).getTime();
+          return t >= dayStartTs && t <= dayEndTs;
         });
       }
       if (targetInst) {
@@ -156,6 +183,55 @@ router.get('/weekly', async (req: Request, res: Response) => {
     if (branchId) baseQuery.branchId = branchId;
 
     const days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+    const dateRanges = days.map(d => ({ day: d, ...getRouteDateForWeekday(d) }));
+    const minStartOfDay = new Date(Math.min(...dateRanges.map(r => r.startOfDay.getTime())));
+    const maxEndOfDay = new Date(Math.max(...dateRanges.map(r => r.endOfDay.getTime())));
+
+    // 1. Fetch ALL groups for the week
+    const allGroups = await Group.find({ ...baseQuery, collectionDay: { $in: days } }).sort({ groupCode: 1 }).lean();
+    const allGroupIds = allGroups.map(g => g._id);
+
+    // 2. Fetch ALL active/overdue loans for these groups
+    const allLoans = await Loan.find({
+      groupId: { $in: allGroupIds },
+      status: { $in: ['ACTIVE', 'OVERDUE'] }
+    }).populate('customerId', 'name phone').lean();
+    const allLoanIds = allLoans.map(l => l._id);
+
+    // 3. Pre-fetch targeted installments for these loans
+    const allInstallments = await Installment.find({
+      loanId: { $in: allLoanIds },
+      $or: [
+        { status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] } },
+        { dueDate: { $gte: minStartOfDay, $lte: maxEndOfDay } },
+        { paidDate: { $gte: minStartOfDay, $lte: maxEndOfDay } }
+      ]
+    }).lean();
+
+    const instsByLoan = new Map<string, any[]>();
+    for (const inst of allInstallments) {
+      const key = String(inst.loanId);
+      let arr = instsByLoan.get(key);
+      if (!arr) {
+        arr = [];
+        instsByLoan.set(key, arr);
+      }
+      arr.push(inst);
+    }
+
+    // 4. Pre-fetch all payments for these groups across all weekdays
+    const allPayments = await Payment.find({
+      groupId: { $in: allGroupIds },
+      paymentDate: { $gte: minStartOfDay, $lte: maxEndOfDay },
+      isReversed: false
+    }).lean();
+
+    // 5. Pre-fetch all disbursements for the week
+    const allDisbursements = await Loan.find({
+      ...baseQuery,
+      disbursedDate: { $gte: minStartOfDay, $lte: maxEndOfDay }
+    }).lean();
+
     const daysBreakdown: any[] = [];
     let weeklyExpected = 0;
     let weeklyCollected = 0;
@@ -164,55 +240,60 @@ router.get('/weekly', async (req: Request, res: Response) => {
     let weeklyDisbursedAmount = 0;
     let weeklyDisbursedCount = 0;
 
-    for (const day of days) {
-      const { startOfDay, endOfDay } = getRouteDateForWeekday(day);
-      const groups = await Group.find({ ...baseQuery, collectionDay: day }).sort({ groupCode: 1 });
-      let dayExp = 0;
-      let dayColl = 0;
-      let dayBorrowers = 0;
-      const groupList: any[] = [];
+    for (const { day, startOfDay, endOfDay } of dateRanges) {
+      const dayStartTs = startOfDay.getTime();
+      const dayEndTs = endOfDay.getTime();
 
-      // Find disbursements on this route day
-      const dayDisbursements = await Loan.find({
-        ...baseQuery,
-        disbursedDate: { $gte: startOfDay, $lte: endOfDay }
-      }).lean();
+      const groups = allGroups.filter(g => g.collectionDay === day);
+
+      const dayDisbursements = allDisbursements.filter(l => {
+        if (!l.disbursedDate) return false;
+        const t = new Date(l.disbursedDate).getTime();
+        return t >= dayStartTs && t <= dayEndTs;
+      });
       const dayDisbAmt = dayDisbursements.reduce((sum, l) => sum + (l.principal || 0), 0);
       const dayDisbCount = dayDisbursements.length;
 
       weeklyDisbursedAmount += dayDisbAmt;
       weeklyDisbursedCount += dayDisbCount;
 
-      for (const grp of groups) {
-        const loans = await Loan.find({ groupId: grp._id, status: { $in: ['ACTIVE', 'OVERDUE'] } })
-          .populate('customerId', 'name phone');
+      let dayExp = 0;
+      let dayColl = 0;
+      let dayBorrowers = 0;
+      const groupList: any[] = [];
 
-        const payments = await Payment.find({
-          groupId: grp._id,
-          paymentDate: { $gte: startOfDay, $lte: endOfDay },
-          isReversed: false
+      for (const grp of groups) {
+        const grpIdStr = String(grp._id);
+        const loans = allLoans.filter(l => String(l.groupId) === grpIdStr);
+
+        const payments = allPayments.filter(p => {
+          if (String(p.groupId) !== grpIdStr) return false;
+          const pDate = new Date(p.paymentDate).getTime();
+          return pDate >= dayStartTs && pDate <= dayEndTs;
         });
         const grpColl = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
         let grpExp = 0;
         for (const l of loans) {
-          let targetInst = await Installment.findOne({
-            loanId: l._id,
-            dueDate: { $gte: startOfDay, $lte: endOfDay }
+          const loanInsts = instsByLoan.get(String(l._id)) || [];
+          let targetInst = loanInsts.find(i => {
+            if (!i.dueDate) return false;
+            const t = new Date(i.dueDate).getTime();
+            return t >= dayStartTs && t <= dayEndTs;
           });
           if (!targetInst) {
-            targetInst = await Installment.findOne({
-              loanId: l._id,
-              paidDate: { $gte: startOfDay, $lte: endOfDay }
+            targetInst = loanInsts.find(i => {
+              if (!i.paidDate) return false;
+              const t = new Date(i.paidDate).getTime();
+              return t >= dayStartTs && t <= dayEndTs;
             });
           }
           if (!targetInst) {
-            targetInst = await Installment.findOne({
-              loanId: l._id,
-              status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-            }).sort({ installmentNumber: 1 });
+            const pendingInsts = loanInsts.filter(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
+            pendingInsts.sort((a, b) => a.installmentNumber - b.installmentNumber);
+            targetInst = pendingInsts[0];
           }
-          grpExp += targetInst ? targetInst.expectedAmount : 0;
+          grpExp += targetInst ? (targetInst.expectedAmount || 0) : 0;
         }
 
         dayExp += grpExp;

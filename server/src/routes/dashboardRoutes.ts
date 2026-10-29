@@ -31,25 +31,23 @@ router.get('/metrics', async (req: Request, res: Response) => {
       query.branchId = branchId;
     }
 
-    let selectedBranch: any = null;
-    if (query.branchId) {
-      selectedBranch = await Branch.findById(query.branchId);
-    }
-
-    // 1. Total unique customers
-    const totalCustomers = await Customer.countDocuments(query);
-
-    // 2. Active groups
-    const activeGroups = await Group.countDocuments({ ...query, status: 'LIVE' });
-
-    // 3. Active loans
-    const activeLoans = await Loan.countDocuments({ ...query, status: { $in: ['ACTIVE', 'OVERDUE'] } });
-
-    // 4. Loan totals: Disbursed, Collected, and Outstanding matching branch scope
-    const allDisbursedLoans = await Loan.find({
-      ...query,
-      status: { $in: ['ACTIVE', 'OVERDUE', 'CLOSED', 'SETTLED'] }
-    });
+    // 1-4. Fetch counts and disbursed loans in parallel
+    const [
+      selectedBranch,
+      totalCustomers,
+      activeGroups,
+      activeLoans,
+      allDisbursedLoans
+    ] = await Promise.all([
+      query.branchId ? Branch.findById(query.branchId) : null,
+      Customer.countDocuments(query),
+      Group.countDocuments({ ...query, status: 'LIVE' }),
+      Loan.countDocuments({ ...query, status: { $in: ['ACTIVE', 'OVERDUE'] } }),
+      Loan.find({
+        ...query,
+        status: { $in: ['ACTIVE', 'OVERDUE', 'CLOSED', 'SETTLED'] }
+      }).lean()
+    ]);
 
     let totalLoanAmountGiven = 0;
     let totalPrincipalOutstanding = 0;
@@ -90,45 +88,71 @@ router.get('/metrics', async (req: Request, res: Response) => {
       ...query,
       collectionDay: currentWeekday,
       status: { $ne: 'CLOSED' }
-    }).select('_id');
+    }).select('_id').lean();
     const routeGroupIds = routeGroups.map(g => g._id);
 
     const activeRouteLoans = await Loan.find({
       groupId: { $in: routeGroupIds },
       status: { $in: ['ACTIVE', 'OVERDUE'] }
-    }).select('_id');
+    }).select('_id').lean();
+    const activeRouteLoanIds = activeRouteLoans.map(l => l._id);
 
+    // Batch query installments and payments for today's route
+    const [targetInstallments, todayRoutePayments] = await Promise.all([
+      Installment.find({
+        loanId: { $in: activeRouteLoanIds },
+        $or: [
+          { dueDate: { $gte: todayRouteStart, $lte: todayRouteEnd } },
+          { paidDate: { $gte: todayRouteStart, $lte: todayRouteEnd } },
+          { status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] } }
+        ]
+      }).sort({ installmentNumber: 1 }).lean(),
+      Payment.find({
+        groupId: { $in: routeGroupIds },
+        paymentDate: { $gte: todayRouteStart, $lte: todayRouteEnd },
+        isReversed: false
+      }).lean()
+    ]);
+
+    const instMap = new Map<string, any[]>();
+    for (const inst of targetInstallments) {
+      const k = String(inst.loanId);
+      let arr = instMap.get(k);
+      if (!arr) {
+        arr = [];
+        instMap.set(k, arr);
+      }
+      arr.push(inst);
+    }
+
+    const todayStartTs = todayRouteStart.getTime();
+    const todayEndTs = todayRouteEnd.getTime();
     let todayExpected = 0;
-    for (const l of activeRouteLoans) {
-      let targetInst = await Installment.findOne({
-        loanId: l._id,
-        dueDate: { $gte: todayRouteStart, $lte: todayRouteEnd }
+
+    for (const loanId of activeRouteLoanIds) {
+      const loanInsts = instMap.get(String(loanId)) || [];
+      let targetInst = loanInsts.find(i => {
+        if (!i.dueDate) return false;
+        const t = new Date(i.dueDate).getTime();
+        return t >= todayStartTs && t <= todayEndTs;
       });
       if (!targetInst) {
-        targetInst = await Installment.findOne({
-          loanId: l._id,
-          paidDate: { $gte: todayRouteStart, $lte: todayRouteEnd }
+        targetInst = loanInsts.find(i => {
+          if (!i.paidDate) return false;
+          const t = new Date(i.paidDate).getTime();
+          return t >= todayStartTs && t <= todayEndTs;
         });
       }
       if (targetInst) {
         todayExpected += targetInst.expectedAmount;
       } else {
-        const nextPendingInst = await Installment.findOne({
-          loanId: l._id,
-          status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-        }).sort({ installmentNumber: 1 });
+        const nextPendingInst = loanInsts.find(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
         if (nextPendingInst) {
           todayExpected += nextPendingInst.balanceAmount;
         }
       }
     }
 
-    // Collections strictly received on today's route
-    const todayRoutePayments = await Payment.find({
-      groupId: { $in: routeGroupIds },
-      paymentDate: { $gte: todayRouteStart, $lte: todayRouteEnd },
-      isReversed: false
-    });
     let todayActual = 0;
     todayRoutePayments.forEach(p => {
       todayActual += p.amount;
@@ -140,27 +164,27 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const pollachiBranch = await Branch.findOne({ code: 'POLLACHI' });
     const targetBranchId = query.branchId ? query.branchId : pollachiBranch?._id;
 
-    const pendingData = await getPendingOverdueRegister({
-      branchId: targetBranchId && targetBranchId !== 'ALL' ? targetBranchId : undefined
-    });
+    const [pendingData, pendingApprovals, trfIn, trfOut] = await Promise.all([
+      getPendingOverdueRegister({
+        branchId: targetBranchId && targetBranchId !== 'ALL' ? targetBranchId : undefined
+      }),
+      Loan.countDocuments({ ...query, status: 'SUBMITTED' }),
+      targetBranchId ? BranchTransfer.aggregate([
+        { $match: { destinationBranchId: targetBranchId } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]) : Promise.resolve([]),
+      targetBranchId ? BranchTransfer.aggregate([
+        { $match: { sourceBranchId: targetBranchId } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]) : Promise.resolve([])
+    ]);
+
     const totalOverdue = pendingData.summary.totalActualPending;
     const totalBalancePending = pendingData.summary.totalBalancePending;
 
-    // 7. Pending approvals
-    const pendingApprovals = await Loan.countDocuments({ ...query, status: 'SUBMITTED' });
-
     // 8. Dynamic Inter-branch liquidity transfer calculation
     let interBranchBalance = 0;
-
     if (targetBranchId) {
-      const trfIn = await BranchTransfer.aggregate([
-        { $match: { destinationBranchId: targetBranchId } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]);
-      const trfOut = await BranchTransfer.aggregate([
-        { $match: { sourceBranchId: targetBranchId } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]);
       const inAmt = trfIn[0]?.total || 0;
       const outAmt = trfOut[0]?.total || 0;
       interBranchBalance = Math.abs(inAmt - outAmt);
