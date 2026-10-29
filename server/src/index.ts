@@ -29,13 +29,13 @@ export const app = express();
 app.use(cors({ origin: ENV.CORS_ORIGIN, credentials: true }));
 app.use(express.json());
 
-// Health check
-app.get('/api/health', (req, res) => {
+// Health checks
+app.get(['/', '/health', '/api/health'], (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), app: 'Athiveera MFI API' });
 });
 
 // API Routes
-app.use('/api/auth', authRoutes);
+app.use(['/api/auth', '/auth'], authRoutes);
 app.use('/api/branches', branchRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/customers', customerRoutes);

@@ -1,4 +1,10 @@
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+function getApiBase(): string {
+  const envUrl = (import.meta.env.VITE_API_URL || '/api').trim().replace(/\/+$/, '');
+  if (!envUrl || envUrl === '/api') return '/api';
+  return envUrl.endsWith('/api') ? envUrl : `${envUrl}/api`;
+}
+
+const API_BASE = getApiBase();
 
 export async function apiRequest<T = any>(
   endpoint: string,
