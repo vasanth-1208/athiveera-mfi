@@ -389,7 +389,7 @@ export const Transfers: React.FC = () => {
                     min={1}
                     value={formData.amount}
                     onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                    placeholder="e.g. 50000"
+                    placeholder="e.g. 25000"
                     className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono font-bold text-stone-900 focus:outline-none focus:border-amber-600"
                   />
                 </div>
