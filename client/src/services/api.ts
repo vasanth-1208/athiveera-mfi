@@ -28,6 +28,15 @@ export async function apiRequest<T = any>(
     }
   }
 
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const text = await res.text();
+    if (text.startsWith('<!DOCTYPE') || text.includes('<html')) {
+      throw new Error(`Cannot reach Backend API at ${API_BASE}. Please ensure your backend is deployed and VITE_API_URL is configured in Netlify.`);
+    }
+    throw new Error(text || `Request failed with status ${res.status}`);
+  }
+
   const data = await res.json();
   if (!res.ok) {
     throw new Error(data.message || `Request failed with status ${res.status}`);
