@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type Weekday = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY';
+export type Weekday = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY';
 
 export interface IGroup extends Document {
   groupCode: number;
@@ -30,7 +30,7 @@ const GroupSchema: Schema = new Schema(
     headCustomerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     collectionDay: { 
       type: String, 
-      enum: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'], 
+      enum: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'], 
       required: true 
     },
     area: { type: String, default: '', trim: true },

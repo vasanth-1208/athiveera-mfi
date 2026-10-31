@@ -55,11 +55,62 @@ router.get('/', async (req: Request, res: Response) => {
       ];
     }
 
-    const groups = await Group.find(query)
+    const allGroups = await Group.find(query)
       .populate('branchId', 'name code')
       .populate('staffId', 'name')
       .populate('headCustomerId', 'name phone')
       .sort({ groupCode: 1 });
+
+    const allGroupIds = allGroups.map(g => g._id);
+
+    // Dynamic Group Status Calculation:
+    // If all loans under a group are settled or closed -> group is CLOSED
+    // If at least one loan is active/overdue with balance -> group is LIVE
+    const activeLoanGroupIds = await Loan.find({
+      groupId: { $in: allGroupIds },
+      status: { $in: ['ACTIVE', 'OVERDUE'] },
+      outstandingTotal: { $gt: 0 }
+    }).distinct('groupId');
+    const activeGroupIdSet = new Set(activeLoanGroupIds.map(id => String(id)));
+
+    const loanGroupIdsWithLoans = await Loan.find({
+      groupId: { $in: allGroupIds }
+    }).distinct('groupId');
+    const hasLoansGroupIdSet = new Set(loanGroupIdsWithLoans.map(id => String(id)));
+
+    const groupsToUpdateClosed: any[] = [];
+    const groupsToUpdateLive: any[] = [];
+
+    const groups = allGroups.map(g => {
+      const gObj = g.toObject ? g.toObject() : g;
+      const gIdStr = String(g._id);
+
+      let effectiveStatus = g.status || 'LIVE';
+      if (hasLoansGroupIdSet.has(gIdStr)) {
+        if (!activeGroupIdSet.has(gIdStr)) {
+          effectiveStatus = 'CLOSED';
+        } else {
+          effectiveStatus = 'LIVE';
+        }
+      }
+
+      gObj.status = effectiveStatus;
+
+      if (g.status !== effectiveStatus) {
+        if (effectiveStatus === 'CLOSED') groupsToUpdateClosed.push(g._id);
+        else groupsToUpdateLive.push(g._id);
+      }
+
+      return gObj;
+    });
+
+    // Asynchronously persist any status changes to MongoDB
+    if (groupsToUpdateClosed.length > 0) {
+      Group.updateMany({ _id: { $in: groupsToUpdateClosed } }, { status: 'CLOSED' }).catch(() => {});
+    }
+    if (groupsToUpdateLive.length > 0) {
+      Group.updateMany({ _id: { $in: groupsToUpdateLive } }, { status: 'LIVE' }).catch(() => {});
+    }
 
     res.json({ success: true, groups });
   } catch (error: any) {
@@ -117,6 +168,17 @@ router.get('/:id', async (req: Request, res: Response) => {
       totalCollected += l.totalPaid;
       totalOutstanding += l.outstandingTotal;
     });
+
+    // Dynamic Group Status: Closed if all loans are closed/settled; Live if at least 1 loan is active/overdue with balance
+    const hasLiveLoans = loans.some(l => 
+      (l.status === 'ACTIVE' || l.status === 'OVERDUE') && (l.outstandingTotal > 0)
+    );
+    const effectiveStatus = (loans.length > 0 && !hasLiveLoans) ? 'CLOSED' : 'LIVE';
+
+    if (group.status !== effectiveStatus) {
+      group.status = effectiveStatus;
+      await group.save();
+    }
 
     res.json({
       success: true,

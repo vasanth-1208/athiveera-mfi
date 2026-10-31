@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type PaymentMethod = 'CASH' | 'UPI' | 'BANK_TRANSFER';
+export type PaymentMethod = 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'DISCOUNT' | 'SETTLEMENT';
 
 export interface IPaymentAllocation {
   installmentId: mongoose.Types.ObjectId;
@@ -42,7 +42,7 @@ const PaymentSchema: Schema = new Schema(
     collectorId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     paymentDate: { type: Date, default: Date.now },
     amount: { type: Number, required: true },
-    paymentMethod: { type: String, enum: ['CASH', 'UPI', 'BANK_TRANSFER'], default: 'CASH' },
+    paymentMethod: { type: String, enum: ['CASH', 'UPI', 'BANK_TRANSFER', 'DISCOUNT', 'SETTLEMENT'], default: 'CASH' },
     referenceNo: { type: String, default: '' },
     remarks: { type: String, default: '' },
     allocations: [

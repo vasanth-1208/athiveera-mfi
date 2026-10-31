@@ -54,21 +54,10 @@ export const Sidebar: React.FC = () => {
       {/* Brand Header */}
       <div
         className={`h-16 flex items-center ${
-          isCollapsed ? 'justify-center flex-col py-2 px-1 gap-1' : 'justify-between px-3'
+          isCollapsed ? 'justify-center py-2 px-1' : 'px-4'
         } border-b border-amber-950/80 bg-[#140e0a] transition-all`}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          {/* Close / Collapse Toggle Button at Left near Athiveera MFI */}
-          <button
-            type="button"
-            onClick={toggleSidebar}
-            title={isCollapsed ? 'Expand sidebar' : 'Close left column'}
-            className="p-1.5 text-stone-400 hover:text-amber-300 hover:bg-[#251b14] rounded-lg border border-amber-900/40 hover:border-amber-600/60 transition cursor-pointer shrink-0 shadow-2xs"
-            aria-label={isCollapsed ? 'Expand sidebar' : 'Close left column'}
-          >
-            {isCollapsed ? <PanelLeftOpen className="w-4 h-4 text-amber-400" /> : <PanelLeftClose className="w-4 h-4 text-amber-300" />}
-          </button>
-
+        <div className="flex items-center gap-2.5 min-w-0">
           <div
             onClick={isCollapsed ? toggleSidebar : undefined}
             className={`h-9 w-9 flex items-center justify-center p-1 bg-[#251b14] rounded-xl border border-amber-800/40 shadow-inner shrink-0 ${
@@ -149,9 +138,9 @@ export const Sidebar: React.FC = () => {
                   <Coins className="w-4 h-4 shrink-0" />
                   {!isCollapsed && <span>Collections</span>}
                 </NavLink>
-                <NavLink to="/pending" className={navItemClass} title="Pending & Overdue">
+                <NavLink to="/pending" className={navItemClass} title="Overdue & Bad Debts">
                   <AlertCircle className="w-4 h-4 shrink-0" />
-                  {!isCollapsed && <span>Pending & Overdue</span>}
+                  {!isCollapsed && <span>Overdue & Bad Debts</span>}
                 </NavLink>
               </nav>
             </div>
@@ -230,12 +219,6 @@ export const Sidebar: React.FC = () => {
                     <UserCheck className="w-4 h-4 shrink-0" />
                     {!isCollapsed && <span>User Management</span>}
                   </NavLink>
-                  {isAdmin && (
-                    <NavLink to="/import" className={navItemClass} title="Excel Migration">
-                      <UploadCloud className="w-4 h-4 shrink-0" />
-                      {!isCollapsed && <span>Excel Migration</span>}
-                    </NavLink>
-                  )}
                 </nav>
               )}
             </div>

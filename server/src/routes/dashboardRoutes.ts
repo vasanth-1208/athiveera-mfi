@@ -50,34 +50,46 @@ router.get('/metrics', async (req: Request, res: Response) => {
     ]);
 
     let totalLoanAmountGiven = 0;
+    let totalDocCharges = 0;
+    let totalInterest = 0;
+    let totalCollectedAmount = 0;
+    let totalRouteBalance = 0;
     let totalPrincipalOutstanding = 0;
     let totalCollectedWithSavings = 0;
     let totalRepaymentWithSavings = 0;
-    let savingsCollected = 0;
-    let savingsOutstanding = 0;
 
     allDisbursedLoans.forEach(l => {
-      totalLoanAmountGiven += (l.principal || 0);
-      totalCollectedWithSavings += (l.totalPaid || 0);
+      const isLive = l.status === 'ACTIVE' || l.status === 'OVERDUE';
+      const principal = l.principal || 0;
+      const interest = l.interestAmount || 0;
+      const docCharges = l.docCharges || 0;
       const savings = l.savingsAmount || 0;
+      const paid = l.totalPaid || 0;
 
-      if (l.status === 'ACTIVE' || l.status === 'OVERDUE') {
+      totalLoanAmountGiven += principal;
+      totalDocCharges += docCharges;
+      totalInterest += interest;
+      totalCollectedWithSavings += paid;
+
+      if (isLive) {
+        // LIVE LOANS: Add / keep savings until the loan is closed
+        totalCollectedAmount += paid;
+        const balWithSavings = l.outstandingTotal !== undefined ? l.outstandingTotal : Math.max(0, (principal + interest + savings) - paid);
+        totalRouteBalance += balWithSavings;
         totalPrincipalOutstanding += (l.outstandingPrincipal || 0);
-        totalRepaymentWithSavings += (l.outstandingTotal || 0);
-
-        const totalPayable = l.totalPayable || ((l.principal || 0) + (l.interestAmount || 0) + savings);
-        const paidRatio = totalPayable > 0 ? Math.min(1, (l.totalPaid || 0) / totalPayable) : 0;
-        const paidSav = Math.round(savings * paidRatio);
-        savingsCollected += paidSav;
-        savingsOutstanding += Math.max(0, savings - paidSav);
+        totalRepaymentWithSavings += balWithSavings;
       } else {
-        savingsCollected += savings;
+        // CLOSED LOANS: Minus the savings upon loan closure (if paid was gross with savings; otherwise retain net)
+        const netPaid = paid > (principal + interest) ? Math.max(0, paid - savings) : paid;
+        totalCollectedAmount += netPaid;
       }
     });
 
-    // Core Loan + Interest Contract metrics (excluding borrower savings deposit liabilities)
-    const totalCollectedAmount = Math.max(0, totalCollectedWithSavings - savingsCollected);
-    const totalRepaymentOutstanding = Math.max(0, totalRepaymentWithSavings - savingsOutstanding);
+    // Contractual Loan + Interest contract
+    const totalContractualPayable = totalLoanAmountGiven + totalInterest;
+    // Canonical balance: Loan + Interest contract minus Total Collected
+    const totalBalanceCollection = Math.max(0, totalContractualPayable - totalCollectedAmount);
+    const totalRepaymentOutstanding = totalBalanceCollection;
 
     // 5. Today's collections and shortfall matching the active daily route register
     const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
@@ -205,6 +217,9 @@ router.get('/metrics', async (req: Request, res: Response) => {
       });
     }
 
+    const totalMembersGiven = allDisbursedLoans.length;
+    const totalOutstanding = totalCashBalance + totalBalanceCollection;
+
     res.json({
       success: true,
       metrics: {
@@ -212,13 +227,18 @@ router.get('/metrics', async (req: Request, res: Response) => {
         activeGroups,
         activeLoans,
         totalLoanAmountGiven,
+        totalMembersGiven,
+        totalDocCharges,
+        totalInterest,
+        totalContractualPayable,
         totalCollectedAmount,
+        totalBalanceCollection,
+        totalRouteBalance,
+        totalOutstanding,
         totalPrincipalOutstanding,
         totalRepaymentOutstanding,
         totalCollectedWithSavings,
         totalRepaymentWithSavings,
-        savingsCollected,
-        savingsOutstanding,
         todayExpected,
         todayActual,
         todayShortfall,

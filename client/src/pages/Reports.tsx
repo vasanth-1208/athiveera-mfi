@@ -20,12 +20,17 @@ import {
   Filter, 
   Wallet,
   Receipt,
-  ArrowRight
+  ArrowRight,
+  Search,
+  FileText,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 
-type ReportTab = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'PENDING_EMI' | 'PROFIT_LOSS' | 'BRANCH_WISE';
+type ReportTab = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'PENDING_EMI' | 'PROFIT_LOSS';
 
 export const Reports: React.FC = () => {
   const { selectedBranchId, selectedBranch } = useBranch();
@@ -33,30 +38,109 @@ export const Reports: React.FC = () => {
 
   // Filters
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [isDateRangeMode, setIsDateRangeMode] = useState<boolean>(false);
+  const [startDate, setStartDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(1); // 1st of month
+    return d.toISOString().split('T')[0];
+  });
+  const [endDate, setEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
   const [pendingDayFilter, setPendingDayFilter] = useState<string>('ALL');
+  const [pendingIsRangeMode, setPendingIsRangeMode] = useState<boolean>(false);
+  const [pendingStartDate, setPendingStartDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d.toISOString().split('T')[0];
+  });
+  const [pendingEndDate, setPendingEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
-  // Excel Download Helper
-  const handleExport = (endpoint: string, params: Record<string, any> = {}) => {
-    const token = localStorage.getItem('athiveera_token');
-    const searchParams = new URLSearchParams();
-    if (token) searchParams.append('token', token);
-    if (selectedBranchId) searchParams.append('branchId', selectedBranchId);
+  // Profit & Loss Date Range State
+  const [plIsRangeMode, setPlIsRangeMode] = useState<boolean>(false);
+  const [plStartDate, setPlStartDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d.toISOString().split('T')[0];
+  });
+  const [plEndDate, setPlEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== '') {
-        searchParams.append(k, String(v));
-      }
+  // Profit & Loss Interactive Views & Filters
+  const [plViewMode, setPlViewMode] = useState<'REGISTER' | 'EXPENSES' | 'STATEMENT'>('REGISTER');
+  const [plSearch, setPlSearch] = useState<string>('');
+  const [plDayFilter, setPlDayFilter] = useState<string>('ALL');
+  const [plExpenseSearch, setPlExpenseSearch] = useState<string>('');
+  const [plExpenseCategory, setPlExpenseCategory] = useState<string>('ALL');
+  const [plWeekRange, setPlWeekRange] = useState<string>('1-15');
+
+  // Profit & Loss Sorting State
+  const [pnlSortCol, setPnlSortCol] = useState<'sNo' | 'groupCode' | 'customerName' | 'groupName' | 'loanDate' | 'collectionDay'>('sNo');
+  const [pnlSortDir, setPnlSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const handlePnlSort = (col: 'sNo' | 'groupCode' | 'customerName' | 'groupName' | 'loanDate' | 'collectionDay') => {
+    if (pnlSortCol === col) {
+      setPnlSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setPnlSortCol(col);
+      setPnlSortDir('asc');
     }
-    const url = `/api/reports/${endpoint}?${searchParams.toString()}`;
-    window.open(url, '_blank');
+  };
+
+  const [exportLoading, setExportLoading] = useState<string | null>(null);
+
+  // Authenticated Excel Download Helper (Fixes 401 token required error and supports Date Range)
+  const handleExport = async (endpoint: string, params: Record<string, any> = {}, defaultName = 'report') => {
+    try {
+      setExportLoading(endpoint);
+      const token = localStorage.getItem('athiveera_token');
+      const searchParams = new URLSearchParams();
+      if (token) searchParams.append('token', token);
+      if (selectedBranchId) searchParams.append('branchId', selectedBranchId);
+
+      for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null && v !== '') {
+          searchParams.append(k, String(v));
+        }
+      }
+
+      const res = await fetch(`/api/reports/${endpoint}?${searchParams.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+
+      if (!res.ok) {
+        const errorJson = await res.json().catch(() => ({}));
+        throw new Error(errorJson.message || `Download failed with status ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition');
+      let filename = `${defaultName}_${new Date().toISOString().split('T')[0]}.xlsx`;
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
+
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: any) {
+      alert(`Excel Export Failed: ${err.message || 'Please check your connection and try again.'}`);
+    } finally {
+      setExportLoading(null);
+    }
   };
 
   // Queries for each report type
   const { data: dailyData, isLoading: isDailyLoading } = useQuery({
-    queryKey: ['reportDaily', selectedBranchId, selectedDate],
-    queryFn: () => api.getDailyReport({ branchId: selectedBranchId, date: selectedDate }),
+    queryKey: ['reportDaily', selectedBranchId, isDateRangeMode ? `${startDate}_${endDate}` : selectedDate],
+    queryFn: () => isDateRangeMode
+      ? api.getDailyReport({ branchId: selectedBranchId, startDate, endDate })
+      : api.getDailyReport({ branchId: selectedBranchId, date: selectedDate }),
     enabled: activeTab === 'DAILY'
   });
 
@@ -73,21 +157,24 @@ export const Reports: React.FC = () => {
   });
 
   const { data: pendingData, isLoading: isPendingLoading } = useQuery({
-    queryKey: ['reportPendingEmi', selectedBranchId, pendingDayFilter],
-    queryFn: () => api.getPendingEmiReport({ branchId: selectedBranchId, collectionDay: pendingDayFilter !== 'ALL' ? pendingDayFilter : undefined }),
+    queryKey: ['reportPendingEmi', selectedBranchId, pendingDayFilter, pendingIsRangeMode ? `${pendingStartDate}_${pendingEndDate}` : 'all'],
+    queryFn: () => api.getPendingEmiReport({
+      branchId: selectedBranchId,
+      collectionDay: pendingDayFilter !== 'ALL' ? pendingDayFilter : undefined,
+      startDate: pendingIsRangeMode ? pendingStartDate : undefined,
+      endDate: pendingIsRangeMode ? pendingEndDate : undefined
+    }),
     enabled: activeTab === 'PENDING_EMI'
   });
 
   const { data: plData, isLoading: isPlLoading } = useQuery({
-    queryKey: ['reportProfitLoss', selectedBranchId],
-    queryFn: () => api.getProfitLossReport({ branchId: selectedBranchId }),
+    queryKey: ['reportProfitLoss', selectedBranchId, plIsRangeMode ? `${plStartDate}_${plEndDate}` : 'all_time'],
+    queryFn: () => api.getProfitLossReport({
+      branchId: selectedBranchId,
+      startDate: plIsRangeMode ? plStartDate : undefined,
+      endDate: plIsRangeMode ? plEndDate : undefined
+    }),
     enabled: activeTab === 'PROFIT_LOSS'
-  });
-
-  const { data: branchWiseData, isLoading: isBranchWiseLoading } = useQuery({
-    queryKey: ['reportBranchWise'],
-    queryFn: () => api.getBranchWiseReport(),
-    enabled: activeTab === 'BRANCH_WISE'
   });
 
   const months = [
@@ -135,7 +222,7 @@ export const Reports: React.FC = () => {
           }`}
         >
           <Calendar className="w-4 h-4 text-amber-500" />
-          <span>Daily Reports</span>
+          <span>Daily & Date Range Reports</span>
         </button>
 
         <button
@@ -185,76 +272,197 @@ export const Reports: React.FC = () => {
           <TrendingUp className="w-4 h-4 text-amber-500" />
           <span>Profit & Loss</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab('BRANCH_WISE')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${
-            activeTab === 'BRANCH_WISE'
-              ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-              : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
-          }`}
-        >
-          <Building2 className="w-4 h-4 text-amber-500" />
-          <span>Branch Wise Reports</span>
-        </button>
       </div>
 
       {/* ======================================================== */}
-      {/* 1. DAILY REPORTS TAB */}
+      {/* 1. DAILY & DATE RANGE REPORTS TAB */}
       {/* ======================================================== */}
       {activeTab === 'DAILY' && (
         <div className="space-y-6">
-          {/* Controls Bar */}
+          {/* Controls Bar: Single Date vs Date Range (Date-to-Date) */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-bold text-stone-700">Select Date:</span>
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
-              />
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Range Toggle */}
+              <div className="flex items-center bg-[#ece3d4] p-1 rounded-xl border border-[#ded3be]">
+                <button
+                  type="button"
+                  onClick={() => setIsDateRangeMode(false)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    !isDateRangeMode
+                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                      : 'text-stone-700 hover:text-stone-900'
+                  }`}
+                >
+                  Single Date
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDateRangeMode(true)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    isDateRangeMode
+                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                      : 'text-stone-700 hover:text-stone-900'
+                  }`}
+                >
+                  Date-to-Date Range
+                </button>
+              </div>
+
+              {!isDateRangeMode ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-stone-700">Select Date:</span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-stone-700">From Date:</span>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                  />
+                  <span className="text-xs font-bold text-stone-700">To Date:</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                  />
+                </div>
+              )}
             </div>
 
             <button
-              onClick={() => handleExport('daily/export', { date: selectedDate })}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+              onClick={() => isDateRangeMode
+                ? handleExport('daily/export', { startDate, endDate }, `report_${startDate}_to_${endDate}`)
+                : handleExport('daily/export', { date: selectedDate }, `daily_report_${selectedDate}`)
+              }
+              disabled={!!exportLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5 text-amber-400" />
-              <span>Export Daily Report (.xlsx)</span>
+              <span>
+                {exportLoading === 'daily/export'
+                  ? 'Exporting...'
+                  : isDateRangeMode
+                    ? 'Export Date Range Report (.xlsx)'
+                    : 'Export Daily Report (.xlsx)'}
+              </span>
             </button>
           </div>
 
-          {/* Daily KPI Summary Cards (Collections, Shortfall, Disbursements) */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-[#fffdfa] p-5 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-xs font-bold text-stone-500 uppercase tracking-wider">Collections Received</p>
-              <p className="text-2xl font-black text-emerald-700 mt-1">
-                ₹{(dailyData?.summary?.totalCollected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-xs text-stone-500 font-medium">
-                Cash: ₹{(dailyData?.summary?.totalCash || 0).toLocaleString('en-IN')} • Digital: ₹{(dailyData?.summary?.totalDigital || 0).toLocaleString('en-IN')} ({dailyData?.payments?.length || 0} Receipts)
-              </span>
+          {/* 10 Canonical Summary KPI Cards */}
+          <div className="space-y-3">
+            {/* Row 1: Route Dues, Collections & Total Cash Inflows */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Expected Due</p>
+                <p className="text-xl font-black text-amber-950 mt-1">
+                  ₹{(dailyData?.summary?.expectedDue || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Route scheduled target
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Amount</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(dailyData?.summary?.collectedAmount || dailyData?.summary?.totalCollected || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-800 font-semibold block mt-0.5">
+                  Repayments on route • {dailyData?.payments?.length || 0} Receipts
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Shortfall</p>
+                <p className="text-xl font-black text-rose-600 mt-1">
+                  ₹{(dailyData?.summary?.shortfall || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Expected due − route collected
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Document Charges</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(dailyData?.summary?.docCharges || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-amber-800 font-medium block mt-0.5">
+                  Collected upfront on loans given
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-emerald-300 bg-emerald-50/40 shadow-xs">
+                <p className="text-[10px] font-bold text-emerald-900 uppercase tracking-wider">Total Collected</p>
+                <p className="text-xl font-black text-emerald-800 mt-1">
+                  ₹{(dailyData?.summary?.totalCollected || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                  Repayments + Upfront Doc Charges
+                </span>
+              </div>
             </div>
 
-            <div className="bg-[#fffdfa] p-5 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-xs font-bold text-stone-500 uppercase tracking-wider">Daily Collection Shortfall</p>
-              <p className="text-2xl font-black text-rose-600 mt-1">
-                ₹{(dailyData?.summary?.shortfall || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-xs text-stone-500 font-medium">
-                Expected route due: ₹{(dailyData?.summary?.expectedDue || 0).toLocaleString('en-IN')}
-              </span>
-            </div>
+            {/* Row 2: Loans Disbursed, Interest Given & Collections Component Breakdown */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Loan Given</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(dailyData?.summary?.totalLoanGiven ?? dailyData?.summary?.totalDisbursed ?? 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] font-black text-amber-800 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-300/60 inline-block mt-0.5">
+                  {dailyData?.summary?.disbursementCount || 0} Loans Given
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-5 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-xs font-bold text-stone-500 uppercase tracking-wider">Loans Disbursed Today</p>
-              <p className="text-2xl font-black text-amber-950 mt-1">
-                ₹{(dailyData?.summary?.totalDisbursed || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-xs text-amber-800 font-semibold">
-                {dailyData?.summary?.disbursementCount || 0} New Loans Issued Today
-              </span>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Interest Given</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(dailyData?.summary?.interestGiven || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Contractual interest on loans given
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Principal</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(dailyData?.summary?.collectedPrincipal || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Principal portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Interest</p>
+                <p className="text-xl font-black text-amber-800 mt-1">
+                  ₹{(dailyData?.summary?.collectedInterest || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Interest portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Savings</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(dailyData?.summary?.collectedSavings || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Savings portion realized
+                </span>
+              </div>
             </div>
           </div>
 
@@ -263,7 +471,7 @@ export const Reports: React.FC = () => {
             <div className="p-4 bg-[#f6f0e4] border-b border-[#ded3be] flex items-center justify-between">
               <h3 className="text-sm font-black text-stone-900 flex items-center gap-2">
                 <Coins className="w-4 h-4 text-emerald-700" />
-                <span>Collections Received Today ({dailyData?.payments?.length || 0})</span>
+                <span>Collections Received ({dailyData?.payments?.length || 0})</span>
               </h3>
             </div>
             <div className="overflow-x-auto">
@@ -271,6 +479,7 @@ export const Reports: React.FC = () => {
                 <thead className="bg-[#fbf7f0] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ded3be]">
                   <tr>
                     <th className="px-4 py-3">Receipt #</th>
+                    {isDateRangeMode && <th className="px-4 py-3">Date</th>}
                     <th className="px-4 py-3">Borrower / Phone</th>
                     <th className="px-4 py-3">Group & Day</th>
                     <th className="px-4 py-3">Collector</th>
@@ -280,11 +489,16 @@ export const Reports: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-[#ece3d4]">
                   {isDailyLoading ? (
-                    <tr><td colSpan={6} className="text-center py-8 text-stone-400">Loading daily transactions...</td></tr>
+                    <tr><td colSpan={isDateRangeMode ? 7 : 6} className="text-center py-8 text-stone-400">Loading daily transactions...</td></tr>
                   ) : dailyData?.payments?.length > 0 ? (
                     dailyData.payments.map((p: any) => (
                       <tr key={p._id} className="hover:bg-[#faf6ee] transition">
                         <td className="px-4 py-3 font-mono font-bold text-stone-800">{p.receiptNumber}</td>
+                        {isDateRangeMode && (
+                          <td className="px-4 py-3 font-mono text-[11px] text-stone-600">
+                            {p.paymentDate ? new Date(p.paymentDate).toLocaleDateString('en-IN') : '-'}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <span className="font-bold text-stone-900 block">{p.customerId?.name}</span>
                           <span className="font-mono text-[11px] text-stone-500">{p.customerId?.phone || '-'}</span>
@@ -305,19 +519,19 @@ export const Reports: React.FC = () => {
                       </tr>
                     ))
                   ) : (
-                    <tr><td colSpan={6} className="text-center py-8 text-stone-400">No collections recorded on this date.</td></tr>
+                    <tr><td colSpan={isDateRangeMode ? 7 : 6} className="text-center py-8 text-stone-400">No collections recorded in this period.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          {/* Loans Disbursed Today Table (Matching Collections Received Today) */}
+          {/* Loans Disbursed Table */}
           <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
             <div className="p-4 bg-[#f6f0e4] border-b border-[#ded3be] flex items-center justify-between">
               <h3 className="text-sm font-black text-stone-900 flex items-center gap-2">
                 <HandCoins className="w-4 h-4 text-amber-800" />
-                <span>Loans Disbursed Today ({dailyData?.disbursements?.length || 0})</span>
+                <span>Loans Disbursed ({dailyData?.disbursements?.length || 0})</span>
               </h3>
             </div>
             <div className="overflow-x-auto">
@@ -325,6 +539,7 @@ export const Reports: React.FC = () => {
                 <thead className="bg-[#fbf7f0] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ded3be]">
                   <tr>
                     <th className="px-4 py-3">Account #</th>
+                    {isDateRangeMode && <th className="px-4 py-3">Date</th>}
                     <th className="px-4 py-3">Borrower / Phone</th>
                     <th className="px-4 py-3">Group Name</th>
                     <th className="px-4 py-3">Principal (₹)</th>
@@ -335,11 +550,16 @@ export const Reports: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-[#ece3d4]">
                   {isDailyLoading ? (
-                    <tr><td colSpan={7} className="text-center py-8 text-stone-400">Loading daily disbursements...</td></tr>
+                    <tr><td colSpan={isDateRangeMode ? 8 : 7} className="text-center py-8 text-stone-400">Loading disbursements...</td></tr>
                   ) : dailyData?.disbursements?.length > 0 ? (
                     dailyData.disbursements.map((d: any) => (
                       <tr key={d._id} className="hover:bg-[#faf6ee] transition font-medium">
                         <td className="px-4 py-3 font-mono font-bold text-stone-800">{d.loanNumber}</td>
+                        {isDateRangeMode && (
+                          <td className="px-4 py-3 font-mono text-[11px] text-stone-600">
+                            {d.disbursedDate ? new Date(d.disbursedDate).toLocaleDateString('en-IN') : '-'}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <span className="font-bold text-stone-900 block">{d.customerId?.name}</span>
                           <span className="font-mono text-[11px] text-stone-500">{d.customerId?.phone || '-'}</span>
@@ -356,7 +576,7 @@ export const Reports: React.FC = () => {
                       </tr>
                     ))
                   ) : (
-                    <tr><td colSpan={7} className="text-center py-8 text-stone-400 font-medium">No loans disbursed on this date.</td></tr>
+                    <tr><td colSpan={isDateRangeMode ? 8 : 7} className="text-center py-8 text-stone-400 font-medium">No loans disbursed in this period.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -373,7 +593,7 @@ export const Reports: React.FC = () => {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
             <div>
               <h3 className="text-sm font-black text-stone-900">Weekly Route Performance & Collections</h3>
-              <p className="text-xs text-stone-500">4-Day Field Route collection register analysis (Monday to Thursday)</p>
+              <p className="text-xs text-stone-500">Field Route collection register analysis (Monday to Sunday)</p>
             </div>
 
             <button
@@ -385,57 +605,112 @@ export const Reports: React.FC = () => {
             </button>
           </div>
 
-          {/* Weekly KPI Cards (Includes Disbursed Principal and Loan Count) */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Weekly Expected Due</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                ₹{(weeklyData?.summary?.weeklyExpected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">
-                {weeklyData?.summary?.totalScheduledGroups || 0} Groups • {weeklyData?.summary?.totalActiveBorrowers || 0} Borrowers
-              </span>
-            </div>
+          {/* Weekly 10 Canonical Summary KPI Cards */}
+          <div className="space-y-3">
+            {/* Row 1: Weekly Route Targets & Total Inflows */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Expected Due</p>
+                <p className="text-xl font-black text-amber-950 mt-1">
+                  ₹{(weeklyData?.summary?.expectedDue || weeklyData?.summary?.weeklyExpected || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  {weeklyData?.summary?.totalScheduledGroups || 0} Groups • {weeklyData?.summary?.totalActiveBorrowers || 0} Borrowers
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Weekly Collected</p>
-              <p className="text-xl font-black text-emerald-700 mt-0.5">
-                ₹{(weeklyData?.summary?.weeklyCollected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-emerald-800 font-bold">
-                {weeklyData?.summary?.overallEfficiency || 0}% Recovery Efficiency
-              </span>
-            </div>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Amount</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(weeklyData?.summary?.collectedAmount || weeklyData?.summary?.weeklyCollected || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-800 font-semibold block mt-0.5">
+                  {weeklyData?.summary?.overallEfficiency || 0}% Route Efficiency
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Weekly Shortfall</p>
-              <p className="text-xl font-black text-rose-700 mt-0.5">
-                ₹{(weeklyData?.summary?.weeklyShortfall || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">To be collected</span>
-            </div>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Shortfall</p>
+                <p className="text-xl font-black text-rose-600 mt-1">
+                  ₹{(weeklyData?.summary?.shortfall || weeklyData?.summary?.weeklyShortfall || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Weekly route deficit
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Overall Efficiency</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                {weeklyData?.summary?.overallEfficiency || 0}%
-              </p>
-              <div className="w-full bg-[#ece3d4] h-1.5 rounded-full mt-2 overflow-hidden">
-                <div
-                  className="bg-emerald-600 h-full rounded-full"
-                  style={{ width: `${Math.min(100, weeklyData?.summary?.overallEfficiency || 0)}%` }}
-                />
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Document Charges</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(weeklyData?.summary?.docCharges || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-amber-800 font-medium block mt-0.5">
+                  Collected upfront this week
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-emerald-300 bg-emerald-50/40 shadow-xs">
+                <p className="text-[10px] font-bold text-emerald-900 uppercase tracking-wider">Total Collected</p>
+                <p className="text-xl font-black text-emerald-800 mt-1">
+                  ₹{(weeklyData?.summary?.totalCollected ?? (((weeklyData?.summary?.collectedAmount || weeklyData?.summary?.weeklyCollected || 0)) + (weeklyData?.summary?.docCharges || 0))).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                  Repayments + Upfront Doc Charges
+                </span>
               </div>
             </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Loans Disbursed This Week</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                ₹{(weeklyData?.summary?.weeklyDisbursedAmount || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-amber-800 font-semibold">
-                {weeklyData?.summary?.weeklyDisbursedCount || 0} Loans Issued
-              </span>
+            {/* Row 2: Weekly Disbursed Principal, Interest Given & Collections Component Breakdown */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Loan Given</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(weeklyData?.summary?.totalLoanGiven || weeklyData?.summary?.weeklyDisbursedAmount || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] font-black text-amber-800 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-300/60 inline-block mt-0.5">
+                  {weeklyData?.summary?.disbursementCount || weeklyData?.summary?.weeklyDisbursedCount || 0} Loans Given
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Interest Given</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(weeklyData?.summary?.interestGiven || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Contractual interest on loans given
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Principal</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(weeklyData?.summary?.collectedPrincipal || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Principal portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Interest</p>
+                <p className="text-xl font-black text-amber-800 mt-1">
+                  ₹{(weeklyData?.summary?.collectedInterest || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Interest portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Savings</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(weeklyData?.summary?.collectedSavings || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Savings portion realized
+                </span>
+              </div>
             </div>
           </div>
 
@@ -526,61 +801,112 @@ export const Reports: React.FC = () => {
             </button>
           </div>
 
-          {/* Monthly KPI Summary Cards (Target, Collections, Shortfall, Recovery %, Disbursed, Count) */}
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Target to Collect</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                ₹{(monthlyData?.summary?.targetToCollect || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Scheduled due this month</span>
-            </div>
+          {/* Monthly 10 Canonical Summary KPI Cards */}
+          <div className="space-y-3">
+            {/* Row 1: Monthly Route Targets & Total Inflows */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Expected Due</p>
+                <p className="text-xl font-black text-amber-950 mt-1">
+                  ₹{(monthlyData?.summary?.expectedDue || monthlyData?.summary?.targetToCollect || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Scheduled due for {monthlyData?.monthName || 'month'}
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collections Realized</p>
-              <p className="text-xl font-black text-emerald-700 mt-0.5">
-                ₹{(monthlyData?.summary?.totalCollected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-emerald-800 font-semibold">
-                {monthlyData?.summary?.recoveryPercentage || 0}% Recovery Efficiency
-              </span>
-            </div>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Amount</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(monthlyData?.summary?.collectedAmount || monthlyData?.summary?.totalCollected || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-800 font-semibold block mt-0.5">
+                  {monthlyData?.summary?.recoveryPercentage || 0}% Recovery Efficiency
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Monthly Shortfall</p>
-              <p className="text-xl font-black text-rose-700 mt-0.5">
-                ₹{Math.max(0, (monthlyData?.summary?.targetToCollect || 0) - (monthlyData?.summary?.totalCollected || 0)).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-rose-600 font-semibold">Uncollected this month</span>
-            </div>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Shortfall</p>
+                <p className="text-xl font-black text-rose-600 mt-1">
+                  ₹{(monthlyData?.summary?.shortfall ?? Math.max(0, (monthlyData?.summary?.targetToCollect || 0) - (monthlyData?.summary?.totalCollected || 0))).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Uncollected this month
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Recovery Rate</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                {monthlyData?.summary?.recoveryPercentage || 0}%
-              </p>
-              <div className="w-full bg-[#ece3d4] h-1.5 rounded-full mt-2 overflow-hidden">
-                <div
-                  className="bg-emerald-600 h-full rounded-full"
-                  style={{ width: `${Math.min(100, monthlyData?.summary?.recoveryPercentage || 0)}%` }}
-                />
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Document Charges</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(monthlyData?.summary?.docCharges || monthlyData?.summary?.totalDocCharges || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-amber-800 font-medium block mt-0.5">
+                  Collected upfront this month
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-emerald-300 bg-emerald-50/40 shadow-xs">
+                <p className="text-[10px] font-bold text-emerald-900 uppercase tracking-wider">Total Collected</p>
+                <p className="text-xl font-black text-emerald-800 mt-1">
+                  ₹{(monthlyData?.summary?.totalCollected ?? (((monthlyData?.summary?.collectedAmount || 0)) + (monthlyData?.summary?.docCharges || 0))).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                  Repayments + Upfront Doc Charges
+                </span>
               </div>
             </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Loan Amount Disbursed</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                ₹{(monthlyData?.summary?.totalPrincipalDisbursed || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-amber-800 font-semibold">Principal capital issued</span>
-            </div>
+            {/* Row 2: Monthly Disbursed Principal, Interest Given & Collections Component Breakdown */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Loan Given</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(monthlyData?.summary?.totalLoanGiven || monthlyData?.summary?.totalPrincipalDisbursed || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] font-black text-amber-800 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-300/60 inline-block mt-0.5">
+                  {monthlyData?.summary?.disbursementCount || 0} Loans Given
+                </span>
+              </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Loans Count Disbursed</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                {monthlyData?.summary?.disbursementCount || 0} Loans
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Borrowers financed</span>
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Interest Given</p>
+                <p className="text-xl font-black text-amber-900 mt-1">
+                  ₹{(monthlyData?.summary?.interestGiven || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Contractual interest on loans given
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Principal</p>
+                <p className="text-xl font-black text-stone-900 mt-1">
+                  ₹{(monthlyData?.summary?.collectedPrincipal || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Principal portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Interest</p>
+                <p className="text-xl font-black text-amber-800 mt-1">
+                  ₹{(monthlyData?.summary?.collectedInterest || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Interest portion realized
+                </span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Collected Savings</p>
+                <p className="text-xl font-black text-emerald-700 mt-1">
+                  ₹{(monthlyData?.summary?.collectedSavings || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium block mt-0.5">
+                  Savings portion realized
+                </span>
+              </div>
             </div>
           </div>
 
@@ -639,29 +965,81 @@ export const Reports: React.FC = () => {
       {activeTab === 'PENDING_EMI' && (
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-stone-700">Filter by Route Day:</span>
-              {['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'].map((d) => (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-stone-700">Route Day:</span>
+                {['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setPendingDayFilter(d)}
+                    className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      pendingDayFilter === d
+                        ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
+                        : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
+                    }`}
+                  >
+                    {d === 'ALL' ? 'All Days' : d}
+                  </button>
+                ))}
+              </div>
+
+              {/* Range Toggle */}
+              <div className="flex items-center bg-[#ece3d4] p-1 rounded-xl border border-[#ded3be]">
                 <button
-                  key={d}
-                  onClick={() => setPendingDayFilter(d)}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    pendingDayFilter === d
-                      ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-                      : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
+                  type="button"
+                  onClick={() => setPendingIsRangeMode(false)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    !pendingIsRangeMode
+                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                      : 'text-stone-700 hover:text-stone-900'
                   }`}
                 >
-                  {d === 'ALL' ? 'All Days' : d}
+                  All Overdue
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setPendingIsRangeMode(true)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    pendingIsRangeMode
+                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                      : 'text-stone-700 hover:text-stone-900'
+                  }`}
+                >
+                  Date-to-Date
+                </button>
+              </div>
+
+              {pendingIsRangeMode && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-stone-700">From:</span>
+                  <input
+                    type="date"
+                    value={pendingStartDate}
+                    onChange={(e) => setPendingStartDate(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                  />
+                  <span className="text-xs font-bold text-stone-700">To:</span>
+                  <input
+                    type="date"
+                    value={pendingEndDate}
+                    onChange={(e) => setPendingEndDate(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                  />
+                </div>
+              )}
             </div>
 
             <button
-              onClick={() => handleExport('pending-emi/export', { collectionDay: pendingDayFilter !== 'ALL' ? pendingDayFilter : undefined })}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+              onClick={() => handleExport('pending-emi/export', {
+                collectionDay: pendingDayFilter !== 'ALL' ? pendingDayFilter : undefined,
+                startDate: pendingIsRangeMode ? pendingStartDate : undefined,
+                endDate: pendingIsRangeMode ? pendingEndDate : undefined
+              })}
+              disabled={exportLoading === 'pending-emi/export'}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap"
             >
               <Download className="w-3.5 h-3.5 text-amber-400" />
-              <span>Export Pending EMI Report (.xlsx)</span>
+              <span>{exportLoading === 'pending-emi/export' ? 'Exporting...' : 'Export Pending EMI Report (.xlsx)'}</span>
             </button>
           </div>
 
@@ -771,284 +1149,849 @@ export const Reports: React.FC = () => {
       {/* ======================================================== */}
       {/* 5. PROFIT AND LOSS (P&L) TAB */}
       {/* ======================================================== */}
-      {activeTab === 'PROFIT_LOSS' && (
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
-            <div>
-              <h3 className="text-sm font-black text-stone-900">Profit & Loss Financial Statement</h3>
-              <p className="text-xs text-stone-500">Operating revenues, documentation fees, interest margin, and operational expenditure</p>
-            </div>
+      {activeTab === 'PROFIT_LOSS' && (() => {
+        // Calculate filtered PnL rows
+        const filteredPnlRows = (plData?.pnlRows || []).filter((row: any) => {
+          if (plDayFilter !== 'ALL' && row.collectionDay !== plDayFilter) return false;
+          if (plSearch.trim()) {
+            const q = plSearch.toLowerCase();
+            return (
+              row.customerName?.toLowerCase().includes(q) ||
+              row.groupName?.toLowerCase().includes(q) ||
+              row.loanDate?.toLowerCase().includes(q)
+            );
+          }
+          return true;
+        });
 
-            <button
-              onClick={() => handleExport('profit-loss/export')}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5 text-amber-400" />
-              <span>Export P&L Statement (.xlsx)</span>
-            </button>
-          </div>
+        // Sort filtered PnL rows
+        const sortedPnlRows = [...filteredPnlRows].sort((a: any, b: any) => {
+          const valA = a[pnlSortCol];
+          const valB = b[pnlSortCol];
 
-          {/* P&L Top Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Revenue</p>
-              <p className="text-xl font-black text-emerald-700 mt-0.5">
-                ₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Interest + Documentation charges</span>
-            </div>
+          if (pnlSortCol === 'sNo' || pnlSortCol === 'groupCode') {
+            const numA = Number(String(valA || '').replace(/\D/g, '')) || 0;
+            const numB = Number(String(valB || '').replace(/\D/g, '')) || 0;
+            return pnlSortDir === 'asc' ? numA - numB : numB - numA;
+          }
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Expenses</p>
-              <p className="text-xl font-black text-rose-700 mt-0.5">
-                ₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Travel, fuel, rent & salaries</span>
-            </div>
+          if (pnlSortCol === 'loanDate') {
+            const parseDate = (dStr: string) => {
+              if (!dStr || dStr === '-') return 0;
+              const parts = dStr.split('/');
+              if (parts.length === 3) {
+                return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10)).getTime();
+              }
+              return 0;
+            };
+            const tsA = parseDate(valA);
+            const tsB = parseDate(valB);
+            return pnlSortDir === 'asc' ? tsA - tsB : tsB - tsA;
+          }
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Net Operating Profit</p>
-              <p className={`text-xl font-black mt-0.5 ${(plData?.netProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                ₹{(plData?.netProfit || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-emerald-800 font-bold">Surplus after all overheads</span>
-            </div>
+          const strA = String(valA || '').toLowerCase();
+          const strB = String(valB || '').toLowerCase();
+          const comp = strA.localeCompare(strB);
+          return pnlSortDir === 'asc' ? comp : -comp;
+        });
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Operating Margin</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                {plData?.profitMargin || 0}%
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Net profit / Total revenue</span>
-            </div>
-          </div>
+        // Calculate filtered Expenses rows
+        const filteredExpenseRows = (plData?.expenseRows || []).filter((e: any) => {
+          if (plExpenseCategory !== 'ALL' && e.particulars !== plExpenseCategory) return false;
+          if (plExpenseSearch.trim()) {
+            const q = plExpenseSearch.toLowerCase();
+            return (
+              e.particulars?.toLowerCase().includes(q) ||
+              e.remarks?.toLowerCase().includes(q) ||
+              e.date?.toLowerCase().includes(q) ||
+              e.staffName?.toLowerCase().includes(q)
+            );
+          }
+          return true;
+        });
 
-          {/* Two-Column Financial Ledger */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Revenue Column */}
-            <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-              <div className="p-4 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between">
-                <h4 className="text-sm font-black text-emerald-950 uppercase tracking-wide">
-                  Operating Inflows & Revenue
-                </h4>
-                <span className="font-mono font-black text-emerald-800 text-sm">
-                  ₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}
-                </span>
-              </div>
-              <div className="p-4 space-y-3 text-xs">
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Documentation & Processing Fees (6%)</span>
-                    <span className="text-[10px] text-stone-500">Collected upfront at loan disbursement</span>
+        const distinctCategories = Array.from(
+          new Set<string>((plData?.expenseRows || []).map((e: any) => e.particulars).filter(Boolean))
+        ).sort();
+
+        // Calculate displayed weeks
+        const maxAvailableWeeks = plData?.maxWeeks || 50;
+        let startW = 1;
+        let endW = 15;
+        if (plWeekRange === '16-30') {
+          startW = 16;
+          endW = 30;
+        } else if (plWeekRange === '31-50') {
+          startW = 31;
+          endW = Math.max(50, maxAvailableWeeks);
+        } else if (plWeekRange === 'ALL') {
+          startW = 1;
+          endW = maxAvailableWeeks;
+        } else {
+          startW = 1;
+          endW = 15;
+        }
+
+        const displayedWeeks: number[] = [];
+        for (let w = startW; w <= endW; w++) {
+          displayedWeeks.push(w);
+        }
+
+        // Dynamic sums of filtered PnL rows
+        const pnlFilteredTotals = filteredPnlRows.reduce((acc: any, r: any) => {
+          acc.principalAmt += (r.principalAmt || 0);
+          acc.totalCollAmt += (r.totalCollAmt || 0);
+          acc.totalPrincipal += (r.totalPrincipal || 0);
+          acc.totalInterest += (r.totalInterest || 0);
+          acc.totalSavings += (r.totalSavings || 0);
+          acc.totalCollected += (r.totalCollected || 0);
+          acc.docCharge += (r.docCharge || 0);
+          return acc;
+        }, {
+          principalAmt: 0,
+          totalCollAmt: 0,
+          totalPrincipal: 0,
+          totalInterest: 0,
+          totalSavings: 0,
+          totalCollected: 0,
+          docCharge: 0
+        });
+
+        // Dynamic week sums for displayed weeks
+        const displayedWeekSums: Record<number, { p: number; i: number; s: number; tot: number }> = {};
+        displayedWeeks.forEach(w => {
+          displayedWeekSums[w] = { p: 0, i: 0, s: 0, tot: 0 };
+        });
+        filteredPnlRows.forEach((r: any) => {
+          displayedWeeks.forEach(w => {
+            const wk = r.weeks?.[w];
+            if (wk) {
+              displayedWeekSums[w].p += (wk.p || 0);
+              displayedWeekSums[w].i += (wk.i || 0);
+              displayedWeekSums[w].s += (wk.s || 0);
+              displayedWeekSums[w].tot += (wk.tot || 0);
+            }
+          });
+        });
+
+        const totalFilteredExpenses = filteredExpenseRows.reduce((sum: number, e: any) => sum + (e.amount || 0), 0);
+
+        return (
+          <div className="space-y-6">
+            {/* Controls Bar: All-Time vs Range & Export Actions */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
+              <div className="flex flex-wrap items-center gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-stone-900">Profit & Loss Financial Statement & Ledgers</h3>
+                  <p className="text-xs text-stone-500">Operating revenues, weekly collections register, documentation fees, and operational expenditure</p>
+                </div>
+
+                {/* Range Toggle */}
+                <div className="flex items-center bg-[#ece3d4] p-1 rounded-xl border border-[#ded3be]">
+                  <button
+                    type="button"
+                    onClick={() => setPlIsRangeMode(false)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      !plIsRangeMode
+                        ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                        : 'text-stone-700 hover:text-stone-900'
+                    }`}
+                  >
+                    All-Time
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPlIsRangeMode(true)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      plIsRangeMode
+                        ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                        : 'text-stone-700 hover:text-stone-900'
+                    }`}
+                  >
+                    Date-to-Date Range
+                  </button>
+                </div>
+
+                {plIsRangeMode && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-stone-700">From Date:</span>
+                    <input
+                      type="date"
+                      value={plStartDate}
+                      onChange={(e) => setPlStartDate(e.target.value)}
+                      className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                    />
+                    <span className="text-xs font-bold text-stone-700">To Date:</span>
+                    <input
+                      type="date"
+                      value={plEndDate}
+                      onChange={(e) => setPlEndDate(e.target.value)}
+                      className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-900 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                    />
                   </div>
-                  <span className="font-mono font-black text-stone-900 text-sm">
-                    ₹{(plData?.revenue?.docCharges || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Repayment Interest Realized</span>
-                    <span className="text-[10px] text-stone-500">Interest collected from weekly loan repayments</span>
-                  </div>
-                  <span className="font-mono font-black text-emerald-700 text-sm">
-                    ₹{(plData?.revenue?.interestEarned || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center pt-2 font-black text-emerald-950 text-sm">
-                  <span>TOTAL OPERATING REVENUE</span>
-                  <span>₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Expenses Column */}
-            <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-              <div className="p-4 bg-rose-50 border-b border-rose-200 flex items-center justify-between">
-                <h4 className="text-sm font-black text-rose-950 uppercase tracking-wide">
-                  Operating Outflows & Expenditure
-                </h4>
-                <span className="font-mono font-black text-rose-800 text-sm">
-                  ₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}
-                </span>
-              </div>
-              <div className="p-4 space-y-3 text-xs">
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Route Travel & Fuel Reimbursements</span>
-                    <span className="text-[10px] text-stone-500">Calculated staff travel claims</span>
-                  </div>
-                  <span className="font-mono font-black text-rose-700 text-sm">
-                    ₹{(plData?.expenses?.fuel || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Branch Rent & Electricity Utilities</span>
-                    <span className="text-[10px] text-stone-500">Operational facilities cost</span>
-                  </div>
-                  <span className="font-mono font-black text-stone-900 text-sm">
-                    ₹{(plData?.expenses?.rent || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Staff Salaries & Field Incentives</span>
-                    <span className="text-[10px] text-stone-500">Collection officer remuneration</span>
-                  </div>
-                  <span className="font-mono font-black text-stone-900 text-sm">
-                    ₹{(plData?.expenses?.salaries || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
-                  <div>
-                    <span className="font-bold text-stone-900 block">Printing, Stationery & General Admin</span>
-                    <span className="text-[10px] text-stone-500">Passbooks, paper & office running costs</span>
-                  </div>
-                  <span className="font-mono font-black text-stone-900 text-sm">
-                    ₹{(plData?.expenses?.general || 0).toLocaleString('en-IN')}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center pt-2 font-black text-rose-950 text-sm">
-                  <span>TOTAL OPERATING EXPENSES</span>
-                  <span>₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* 6. BRANCH WISE REPORTS TAB */}
-      {/* ======================================================== */}
-      {activeTab === 'BRANCH_WISE' && (
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
-            <div>
-              <h3 className="text-sm font-black text-stone-900">Branch-Wise Comparative Performance</h3>
-              <p className="text-xs text-stone-500">Cross-branch operational portfolio analysis, recoveries, and financial contributions</p>
-            </div>
-
-            <button
-              onClick={() => handleExport('branch-wise/export')}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5 text-amber-400" />
-              <span>Export Branch-Wise Report (.xlsx)</span>
-            </button>
-          </div>
-
-          {/* Consolidated KPI Summary Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Active Branches</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                {branchWiseData?.consolidated?.totalBranches || 0} Branches
-              </p>
-              <span className="text-[10px] text-amber-800 font-semibold">
-                {branchWiseData?.consolidated?.totalGroups || 0} Groups • {branchWiseData?.consolidated?.totalBorrowers || 0} Borrowers
-              </span>
-            </div>
-
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Portfolio Disbursed</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                ₹{(branchWiseData?.consolidated?.totalDisbursed || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Consolidated across all branches</span>
-            </div>
-
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Recoveries Collected</p>
-              <p className="text-xl font-black text-emerald-700 mt-0.5">
-                ₹{(branchWiseData?.consolidated?.totalCollected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-emerald-800 font-semibold">Recovered repayments</span>
-            </div>
-
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Outstanding Balance</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                ₹{(branchWiseData?.consolidated?.totalOutstanding || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-rose-700 font-bold">
-                Overdue: ₹{(branchWiseData?.consolidated?.totalOverdue || 0).toLocaleString('en-IN')}
-              </span>
-            </div>
-          </div>
-
-          {/* Branch-Wise Comparison Table */}
-          <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-            <div className="p-4 bg-[#f6f0e4] border-b border-[#ded3be]">
-              <h3 className="text-sm font-black text-stone-900">Branch Performance Comparison Table</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#fbf7f0] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ded3be]">
-                  <tr>
-                    <th className="px-4 py-3">Branch Name & Code</th>
-                    <th className="px-4 py-3">Cash In Hand</th>
-                    <th className="px-4 py-3">Active Borrowers</th>
-                    <th className="px-4 py-3">Total Disbursed (₹)</th>
-                    <th className="px-4 py-3">Total Collected (₹)</th>
-                    <th className="px-4 py-3">Outstanding Balance (₹)</th>
-                    <th className="px-4 py-3">Overdue Rate</th>
-                    <th className="px-4 py-3 text-right">Operating Expenses (₹)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#ece3d4]">
-                  {isBranchWiseLoading ? (
-                    <tr><td colSpan={8} className="text-center py-8 text-stone-400">Loading branch data...</td></tr>
-                  ) : branchWiseData?.branches?.map((b: any) => (
-                    <tr key={b.branchId} className="hover:bg-[#faf6ee] transition font-medium">
-                      <td className="px-4 py-3">
-                        <span className="font-bold text-stone-900 block">{b.name}</span>
-                        <span className="font-mono text-[10px] text-stone-500 font-semibold">{b.code} &bull; {b.address}</span>
-                      </td>
-                      <td className="px-4 py-3 font-mono font-bold text-stone-800">₹{b.cashBalance?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 font-bold text-stone-900">{b.borrowersCount} Borrowers</td>
-                      <td className="px-4 py-3 font-bold text-stone-900">₹{b.disbursedAmount?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 font-bold text-emerald-700">₹{b.collectedAmount?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 font-bold text-stone-900">₹{b.outstandingAmount?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          b.overduePercent <= 5 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                        }`}>
-                          {b.overduePercent}% Overdue
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right font-bold text-rose-700">
-                        ₹{b.expensesAmount?.toLocaleString('en-IN')}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                {/* Grand Total Footer */}
-                {branchWiseData?.consolidated && (
-                  <tfoot className="bg-[#f6f0e4] font-black border-t-2 border-[#ded3be] text-stone-950">
-                    <tr>
-                      <td className="px-4 py-3 uppercase">ALL BRANCHES CONSOLIDATED</td>
-                      <td className="px-4 py-3 font-mono">₹{branchWiseData.consolidated.totalCashBalance?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3">{branchWiseData.consolidated.totalBorrowers} Borrowers</td>
-                      <td className="px-4 py-3">₹{branchWiseData.consolidated.totalDisbursed?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 text-emerald-800">₹{branchWiseData.consolidated.totalCollected?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3">₹{branchWiseData.consolidated.totalOutstanding?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 text-rose-800">Overdue: ₹{branchWiseData.consolidated.totalOverdue?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 text-right text-rose-800">₹{branchWiseData.consolidated.totalExpenses?.toLocaleString('en-IN')}</td>
-                    </tr>
-                  </tfoot>
                 )}
-              </table>
+              </div>
+
+              {/* Action Buttons: Export P&L Full Workbook + Export Expenses */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleExport('profit-loss/export', plIsRangeMode ? { startDate: plStartDate, endDate: plEndDate } : {}, 'profit_loss_workbook')}
+                  disabled={exportLoading === 'profit-loss/export'}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-[#251b14] hover:bg-[#34271e] text-amber-300 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5 text-amber-400" />
+                  <span>{exportLoading === 'profit-loss/export' ? 'Exporting...' : 'Export P&L Workbook (.xlsx)'}</span>
+                </button>
+
+                <button
+                  onClick={() => handleExport('expenses/export', plIsRangeMode ? { startDate: plStartDate, endDate: plEndDate } : {}, 'expenses_register')}
+                  disabled={exportLoading === 'expenses/export'}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-[#faf6ee] text-stone-800 border border-[#ded3be] rounded-xl text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{exportLoading === 'expenses/export' ? 'Exporting...' : 'Export Expenses (.xlsx)'}</span>
+                </button>
+              </div>
             </div>
+
+            {/* P&L Top Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Revenue</p>
+                <p className="text-xl font-black text-emerald-700 mt-0.5">
+                  ₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium">Interest + Documentation charges</span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Expenses</p>
+                <p className="text-xl font-black text-rose-700 mt-0.5">
+                  ₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium">Travel, fuel, rent & salaries</span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Net Operating Profit</p>
+                <p className={`text-xl font-black mt-0.5 ${(plData?.netProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  ₹{(plData?.netProfit || 0).toLocaleString('en-IN')}
+                </p>
+                <span className="text-[10px] text-emerald-800 font-bold">Surplus after all overheads</span>
+              </div>
+
+              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Operating Margin</p>
+                <p className="text-xl font-black text-amber-950 mt-0.5">
+                  {plData?.profitMargin || 0}%
+                </p>
+                <span className="text-[10px] text-stone-500 font-medium">Net profit / Total revenue</span>
+              </div>
+            </div>
+
+            {/* View Mode Switcher */}
+            <div className="flex items-center gap-2 p-1.5 bg-[#f6f0e4] border border-[#ded3be] rounded-2xl w-fit flex-wrap">
+              <button
+                type="button"
+                onClick={() => setPlViewMode('REGISTER')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  plViewMode === 'REGISTER'
+                    ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+              >
+                <BookOpen className="w-4 h-4 text-amber-400" />
+                <span>Loan P&L Register ({filteredPnlRows.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPlViewMode('EXPENSES')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  plViewMode === 'EXPENSES'
+                    ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+              >
+                <Receipt className="w-4 h-4 text-amber-400" />
+                <span>Operational Expenses ({filteredExpenseRows.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPlViewMode('STATEMENT')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  plViewMode === 'STATEMENT'
+                    ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4 text-amber-400" />
+                <span>Executive P&L Statement</span>
+              </button>
+            </div>
+
+            {/* VIEW 1: LOAN P&L REGISTER (Template Matching) */}
+            {plViewMode === 'REGISTER' && (
+              <div className="space-y-4">
+                <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
+                  {/* Search & Week Filter Header */}
+                  <div className="p-3 bg-[#f6f0e4] border-b border-[#ded3be] flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                      <Search className="w-4 h-4 text-stone-500" />
+                      <input
+                        type="text"
+                        placeholder="Search by borrower name, group, date..."
+                        value={plSearch}
+                        onChange={(e) => setPlSearch(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-900 focus:outline-none focus:border-amber-600 shadow-2xs"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Day Filter */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-bold text-stone-600">Day:</span>
+                        <select
+                          value={plDayFilter}
+                          onChange={(e) => setPlDayFilter(e.target.value)}
+                          className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-800 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                        >
+                          <option value="ALL">All Days</option>
+                          <option value="MONDAY">MONDAY</option>
+                          <option value="TUESDAY">TUESDAY</option>
+                          <option value="WEDNESDAY">WEDNESDAY</option>
+                          <option value="THURSDAY">THURSDAY</option>
+                          <option value="FRIDAY">FRIDAY</option>
+                          <option value="SATURDAY">SATURDAY</option>
+                          <option value="SUNDAY">SUNDAY</option>
+                        </select>
+                      </div>
+
+                      {/* Week Range Filter */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-bold text-stone-600">Weeks:</span>
+                        <select
+                          value={plWeekRange}
+                          onChange={(e) => setPlWeekRange(e.target.value)}
+                          className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-800 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                        >
+                          <option value="1-15">Weeks 1 – 15</option>
+                          <option value="16-30">Weeks 16 – 30</option>
+                          <option value="31-50">Weeks 31 – 50</option>
+                          <option value="ALL">All Weeks (1 – {maxAvailableWeeks})</option>
+                        </select>
+                      </div>
+
+                      <span className="text-xs font-bold text-stone-500 bg-[#ece3d4] px-2.5 py-1.5 rounded-xl border border-[#ded3be]">
+                        {filteredPnlRows.length} Loans
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Full Ledger Table with 2-Row Header */}
+                  <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-[#fbf7f0] text-amber-950 font-bold uppercase tracking-wider sticky top-0 z-20 shadow-xs">
+                        {/* Row 1 Headers */}
+                        <tr className="border-b border-[#ece3d4]">
+                          <th className="px-3 py-2 border-r border-[#ece3d4] sticky left-0 bg-[#fbf7f0] z-30" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('sNo')}
+                              className="flex items-center gap-1 hover:text-amber-700 cursor-pointer w-full text-left font-bold"
+                              title="Sort by Serial Number (Front/Reverse)"
+                            >
+                              <span>S.No</span>
+                              {pnlSortCol === 'sNo' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-2 py-2 border-r border-[#ece3d4] min-w-[75px] text-center" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('groupCode')}
+                              className="flex items-center justify-center gap-1 hover:text-amber-700 cursor-pointer w-full text-center font-bold"
+                              title="Sort by Group Number (Front/Reverse)"
+                            >
+                              <span>Group #</span>
+                              {pnlSortCol === 'groupCode' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-3 py-2 border-r border-[#ece3d4] min-w-[150px]" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('customerName')}
+                              className="flex items-center gap-1 hover:text-amber-700 cursor-pointer w-full text-left font-bold"
+                              title="Sort by Borrower Name (Front/Reverse)"
+                            >
+                              <span>Name</span>
+                              {pnlSortCol === 'customerName' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-3 py-2 border-r border-[#ece3d4] min-w-[140px]" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('groupName')}
+                              className="flex items-center gap-1 hover:text-amber-700 cursor-pointer w-full text-left font-bold"
+                              title="Sort by Group Name (Front/Reverse)"
+                            >
+                              <span>Group Name</span>
+                              {pnlSortCol === 'groupName' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-3 py-2 border-r border-[#ece3d4] min-w-[90px]" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('loanDate')}
+                              className="flex items-center gap-1 hover:text-amber-700 cursor-pointer w-full text-left font-bold"
+                              title="Sort by Loan Date (Front/Reverse)"
+                            >
+                              <span>Loan Date</span>
+                              {pnlSortCol === 'loanDate' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-3 py-2 border-r border-[#ece3d4]" rowSpan={2}>
+                            <button
+                              type="button"
+                              onClick={() => handlePnlSort('collectionDay')}
+                              className="flex items-center gap-1 hover:text-amber-700 cursor-pointer w-full text-left font-bold"
+                              title="Sort by Collection Day (Front/Reverse)"
+                            >
+                              <span>Coll Day</span>
+                              {pnlSortCol === 'collectionDay' ? (
+                                pnlSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                              ) : (
+                                <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                              )}
+                            </button>
+                          </th>
+                          {displayedWeeks.map(w => (
+                            <th key={`h1-w-${w}`} colSpan={4} className="px-2 py-1 text-center border-r border-[#ece3d4] bg-amber-100/60 font-black text-amber-950">
+                              {w} WEEK
+                            </th>
+                          ))}
+                          <th className="px-3 py-2 text-right border-r border-[#ece3d4] min-w-[110px]" rowSpan={2}>Principal Amt</th>
+                          <th className="px-3 py-2 text-right border-r border-[#ece3d4] min-w-[110px]" rowSpan={2}>Total Coll Amt</th>
+                          <th colSpan={4} className="px-2 py-1 text-center border-r border-[#ece3d4] bg-emerald-100 font-black text-emerald-950">
+                            TOTAL
+                          </th>
+                          <th className="px-3 py-2 text-right bg-amber-50 text-amber-900 min-w-[120px]" rowSpan={2}>Document Charge</th>
+                        </tr>
+
+                        {/* Row 2 Subheaders */}
+                        <tr className="text-[10px] text-stone-600 bg-[#f6f0e4] border-b border-[#ded3be]">
+                          {displayedWeeks.map(w => (
+                            <React.Fragment key={`h2-w-${w}`}>
+                              <th className="px-1.5 py-1 text-right border-r border-[#ece3d4]">Prin</th>
+                              <th className="px-1.5 py-1 text-right border-r border-[#ece3d4]">Int</th>
+                              <th className="px-1.5 py-1 text-right border-r border-[#ece3d4]">Sav</th>
+                              <th className="px-1.5 py-1 text-right border-r border-[#ded3be] font-bold text-amber-950 bg-amber-50/60">Tot</th>
+                            </React.Fragment>
+                          ))}
+                          <th className="px-2 py-1 text-right border-r border-[#ece3d4] bg-emerald-50">Principal</th>
+                          <th className="px-2 py-1 text-right border-r border-[#ece3d4] bg-emerald-50">Interest</th>
+                          <th className="px-2 py-1 text-right border-r border-[#ece3d4] bg-emerald-50">Savings</th>
+                          <th className="px-2 py-1 text-right border-r border-[#ded3be] bg-emerald-100 font-black text-emerald-950">Total</th>
+                        </tr>
+                      </thead>
+
+                      <tbody className="divide-y divide-[#ece3d4] bg-white font-mono text-[11px]">
+                        {sortedPnlRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={10 + displayedWeeks.length * 4} className="p-8 text-center text-stone-500 font-sans">
+                              No loan records found matching the selected filter.
+                            </td>
+                          </tr>
+                        ) : (
+                          sortedPnlRows.map((row: any, idx: number) => (
+                            <tr key={row.loanId || idx} className="hover:bg-amber-50/40 transition">
+                              <td className="px-3 py-2 text-stone-500 border-r border-[#ece3d4] sticky left-0 bg-white group-hover:bg-amber-50">
+                                {pnlSortCol === 'sNo' && pnlSortDir === 'desc' ? row.sNo : idx + 1}
+                              </td>
+                              <td className="px-2 py-2 text-center border-r border-[#ece3d4] font-bold text-amber-900 dark:text-amber-300 font-sans">
+                                {row.groupCode ? `#${row.groupCode}` : '-'}
+                              </td>
+                              <td className="px-3 py-2 font-bold font-sans text-stone-900 border-r border-[#ece3d4] bg-white group-hover:bg-amber-50 whitespace-nowrap">
+                                {row.customerName}
+                              </td>
+                              <td className="px-3 py-2 font-sans text-stone-700 border-r border-[#ece3d4] whitespace-nowrap">
+                                {row.groupName}
+                              </td>
+                              <td className="px-3 py-2 text-stone-600 border-r border-[#ece3d4] whitespace-nowrap">
+                                {row.loanDate}
+                              </td>
+                              <td className="px-3 py-2 font-bold text-stone-800 border-r border-[#ece3d4]">
+                                {row.collectionDay}
+                              </td>
+
+                              {/* Weeks Columns */}
+                              {displayedWeeks.map(w => {
+                                const wk = row.weeks?.[w];
+                                return (
+                                  <React.Fragment key={`cell-${row.loanId}-w${w}`}>
+                                    <td className="px-1.5 py-2 text-right border-r border-[#ece3d4] text-stone-600">
+                                      {wk?.p ? wk.p.toLocaleString('en-IN') : '-'}
+                                    </td>
+                                    <td className="px-1.5 py-2 text-right border-r border-[#ece3d4] text-amber-800">
+                                      {wk?.i ? wk.i.toLocaleString('en-IN') : '-'}
+                                    </td>
+                                    <td className="px-1.5 py-2 text-right border-r border-[#ece3d4] text-emerald-700">
+                                      {wk?.s ? wk.s.toLocaleString('en-IN') : '-'}
+                                    </td>
+                                    <td className="px-1.5 py-2 text-right border-r border-[#ded3be] font-bold text-amber-950 bg-amber-50/30">
+                                      {wk?.tot ? wk.tot.toLocaleString('en-IN') : '-'}
+                                    </td>
+                                  </React.Fragment>
+                                );
+                              })}
+
+                              {/* Summary Columns */}
+                              <td className="px-3 py-2 text-right border-r border-[#ece3d4] font-bold text-stone-900">
+                                ₹{(row.principalAmt || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-3 py-2 text-right border-r border-[#ece3d4] font-bold text-stone-900">
+                                ₹{(row.totalCollAmt || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-2 py-2 text-right border-r border-[#ece3d4] text-stone-800 bg-emerald-50/20">
+                                ₹{(row.totalPrincipal || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-2 py-2 text-right border-r border-[#ece3d4] text-amber-900 font-bold bg-emerald-50/20">
+                                ₹{(row.totalInterest || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-2 py-2 text-right border-r border-[#ece3d4] text-emerald-800 bg-emerald-50/20">
+                                ₹{(row.totalSavings || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-2 py-2 text-right border-r border-[#ded3be] font-black text-emerald-950 bg-emerald-100/60">
+                                ₹{(row.totalCollected || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-3 py-2 text-right font-black text-amber-900 bg-amber-50/60">
+                                ₹{(row.docCharge || 0).toLocaleString('en-IN')}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+
+                      {/* Grand Totals Footer */}
+                      <tfoot className="sticky bottom-0 bg-[#f6f0e4] border-t-2 border-[#ded3be] font-black text-amber-950 text-xs shadow-md">
+                        <tr>
+                          <td colSpan={6} className="px-4 py-3 border-r border-[#ded3be] uppercase tracking-wider text-right sticky left-0 bg-[#f6f0e4] z-20">
+                            GRAND TOTAL ({filteredPnlRows.length} Loans):
+                          </td>
+
+                          {/* Weeks Sums */}
+                          {displayedWeeks.map(w => {
+                            const s = displayedWeekSums[w] || { p: 0, i: 0, s: 0, tot: 0 };
+                            return (
+                              <React.Fragment key={`tot-w${w}`}>
+                                <td className="px-1.5 py-3 text-right border-r border-[#ece3d4] text-[10px]">
+                                  {s.p ? s.p.toLocaleString('en-IN') : '-'}
+                                </td>
+                                <td className="px-1.5 py-3 text-right border-r border-[#ece3d4] text-[10px] text-amber-800">
+                                  {s.i ? s.i.toLocaleString('en-IN') : '-'}
+                                </td>
+                                <td className="px-1.5 py-3 text-right border-r border-[#ece3d4] text-[10px] text-emerald-700">
+                                  {s.s ? s.s.toLocaleString('en-IN') : '-'}
+                                </td>
+                                <td className="px-1.5 py-3 text-right border-r border-[#ded3be] text-[10px] font-black bg-amber-100/60">
+                                  {s.tot ? s.tot.toLocaleString('en-IN') : '-'}
+                                </td>
+                              </React.Fragment>
+                            );
+                          })}
+
+                          {/* Grand Summary Columns */}
+                          <td className="px-3 py-3 text-right border-r border-[#ded3be] whitespace-nowrap">
+                            ₹{pnlFilteredTotals.principalAmt.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-3 py-3 text-right border-r border-[#ded3be] whitespace-nowrap">
+                            ₹{pnlFilteredTotals.totalCollAmt.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-2 py-3 text-right border-r border-[#ece3d4] bg-emerald-100/40 whitespace-nowrap">
+                            ₹{pnlFilteredTotals.totalPrincipal.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-2 py-3 text-right border-r border-[#ece3d4] text-amber-900 bg-emerald-100/40 whitespace-nowrap">
+                            ₹{pnlFilteredTotals.totalInterest.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-2 py-3 text-right border-r border-[#ece3d4] text-emerald-800 bg-emerald-100/40 whitespace-nowrap">
+                            ₹{pnlFilteredTotals.totalSavings.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-2 py-3 text-right border-r border-[#ded3be] text-emerald-950 bg-emerald-200/80 font-black whitespace-nowrap">
+                            ₹{pnlFilteredTotals.totalCollected.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-3 py-3 text-right text-amber-900 bg-amber-100/80 font-black whitespace-nowrap">
+                            ₹{pnlFilteredTotals.docCharge.toLocaleString('en-IN')}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Bottom Realized Revenue Statement Card (Matching bottom of Excel template) */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">DOCUMENT CHARGE</p>
+                      <p className="text-lg font-black text-amber-900 mt-0.5">
+                        ₹{pnlFilteredTotals.docCharge.toLocaleString('en-IN')}
+                      </p>
+                      <span className="text-[10px] text-stone-500">Collected upfront at disbursement</span>
+                    </div>
+                    <Coins className="w-8 h-8 text-amber-600/30" />
+                  </div>
+
+                  <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">INTEREST REALIZED</p>
+                      <p className="text-lg font-black text-emerald-700 mt-0.5">
+                        ₹{pnlFilteredTotals.totalInterest.toLocaleString('en-IN')}
+                      </p>
+                      <span className="text-[10px] text-stone-500">Repayment interest earned</span>
+                    </div>
+                    <TrendingUp className="w-8 h-8 text-emerald-600/30" />
+                  </div>
+
+                  <div className="bg-emerald-50/60 p-4 rounded-2xl border border-emerald-300 shadow-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-black text-emerald-900 uppercase tracking-wider">INT & DOCUMENT CHARGE</p>
+                      <p className="text-xl font-black text-emerald-800 mt-0.5">
+                        ₹{(pnlFilteredTotals.docCharge + pnlFilteredTotals.totalInterest).toLocaleString('en-IN')}
+                      </p>
+                      <span className="text-[10px] text-emerald-700 font-bold">Total Operating Revenue</span>
+                    </div>
+                    <Wallet className="w-8 h-8 text-emerald-600/40" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 2: OPERATIONAL EXPENSES REGISTER (Template Matching EXPENSES - POLLACHI) */}
+            {plViewMode === 'EXPENSES' && (
+              <div className="space-y-4">
+                <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
+                  {/* Search & Category Header */}
+                  <div className="p-3 bg-[#f6f0e4] border-b border-[#ded3be] flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                      <Search className="w-4 h-4 text-stone-500" />
+                      <input
+                        type="text"
+                        placeholder="Search particulars, remarks, staff..."
+                        value={plExpenseSearch}
+                        onChange={(e) => setPlExpenseSearch(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-900 focus:outline-none focus:border-amber-600 shadow-2xs"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold text-stone-600">Category:</span>
+                      <select
+                        value={plExpenseCategory}
+                        onChange={(e) => setPlExpenseCategory(e.target.value)}
+                        className="px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-bold text-stone-800 focus:outline-none focus:border-amber-600 cursor-pointer shadow-2xs"
+                      >
+                        <option value="ALL">All Particulars ({plData?.expenseRows?.length || 0})</option>
+                        {distinctCategories.map((cat: string) => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+
+                      <span className="text-xs font-bold text-stone-500 bg-[#ece3d4] px-2.5 py-1.5 rounded-xl border border-[#ded3be]">
+                        {filteredExpenseRows.length} Expenses
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expenses Table */}
+                  <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-[#fbf7f0] text-amber-950 font-bold uppercase tracking-wider sticky top-0 z-10 border-b border-[#ded3be] shadow-xs">
+                        <tr>
+                          <th className="px-3 py-2.5 border-r border-[#ece3d4] w-14">S.No</th>
+                          <th className="px-4 py-2.5 border-r border-[#ece3d4] w-28">Date</th>
+                          <th className="px-4 py-2.5 border-r border-[#ece3d4] min-w-[200px]">Particulars</th>
+                          <th className="px-4 py-2.5 text-right border-r border-[#ece3d4] w-36">Amt (₹)</th>
+                          <th className="px-4 py-2.5 min-w-[250px]">Remarks / Narration</th>
+                          <th className="px-3 py-2.5 text-stone-600 w-28">Staff / Method</th>
+                        </tr>
+                      </thead>
+
+                      <tbody className="divide-y divide-[#ece3d4] bg-white text-xs">
+                        {filteredExpenseRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-stone-500">
+                              No operational expense records found matching the filter.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredExpenseRows.map((e: any, idx: number) => (
+                            <tr key={e.id || idx} className="hover:bg-rose-50/30 transition">
+                              <td className="px-3 py-2 text-stone-500 border-r border-[#ece3d4] font-mono">
+                                {idx + 1}
+                              </td>
+                              <td className="px-4 py-2 font-mono text-stone-800 border-r border-[#ece3d4] whitespace-nowrap">
+                                {e.date}
+                              </td>
+                              <td className="px-4 py-2 font-black text-stone-900 border-r border-[#ece3d4]">
+                                {e.particulars}
+                              </td>
+                              <td className="px-4 py-2 font-mono font-black text-right text-rose-700 border-r border-[#ece3d4]">
+                                ₹{(e.amount || 0).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-4 py-2 text-stone-600">
+                                {e.remarks || '-'}
+                              </td>
+                              <td className="px-3 py-2 text-[10px] text-stone-500 font-medium">
+                                {e.staffName || e.paymentMethod || 'CASH'}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+
+                      {/* Grand Total Row */}
+                      <tfoot className="sticky bottom-0 bg-[#f6f0e4] border-t-2 border-[#ded3be] font-black text-rose-950 text-xs shadow-md">
+                        <tr>
+                          <td colSpan={3} className="px-4 py-3 uppercase tracking-wider text-right border-r border-[#ded3be]">
+                            TOTAL OPERATIONAL EXPENSES:
+                          </td>
+                          <td className="px-4 py-3 font-mono font-black text-right text-rose-800 border-r border-[#ded3be] text-sm">
+                            ₹{totalFilteredExpenses.toLocaleString('en-IN')}
+                          </td>
+                          <td colSpan={2} className="px-4 py-3 text-stone-600 text-[11px] font-medium">
+                            Across {filteredExpenseRows.length} vouchers / entries
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 3: EXECUTIVE FINANCIAL STATEMENT */}
+            {plViewMode === 'STATEMENT' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Revenue Column */}
+                <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
+                  <div className="p-4 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between">
+                    <h4 className="text-sm font-black text-emerald-950 uppercase tracking-wide">
+                      Operating Inflows & Revenue
+                    </h4>
+                    <span className="font-mono font-black text-emerald-800 text-sm">
+                      ₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="p-4 space-y-3 text-xs">
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Documentation & Processing Fees</span>
+                        <span className="text-[10px] text-stone-500">Collected upfront at loan disbursement</span>
+                      </div>
+                      <span className="font-mono font-black text-stone-900 text-sm">
+                        ₹{(plData?.revenue?.docCharges || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Repayment Interest Realized</span>
+                        <span className="text-[10px] text-stone-500">Interest collected from weekly repayments</span>
+                      </div>
+                      <span className="font-mono font-black text-emerald-700 text-sm">
+                        ₹{(plData?.revenue?.interestEarned || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center pt-2 font-black text-emerald-950 text-sm">
+                      <span>TOTAL OPERATING REVENUE</span>
+                      <span>₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Expenses Column */}
+                <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
+                  <div className="p-4 bg-rose-50 border-b border-rose-200 flex items-center justify-between">
+                    <h4 className="text-sm font-black text-rose-950 uppercase tracking-wide">
+                      Operating Outflows & Expenditure
+                    </h4>
+                    <span className="font-mono font-black text-rose-800 text-sm">
+                      ₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="p-4 space-y-3 text-xs">
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Route Travel & Fuel Claims</span>
+                        <span className="text-[10px] text-stone-500">Staff travel reimbursements</span>
+                      </div>
+                      <span className="font-mono font-black text-rose-700 text-sm">
+                        ₹{(plData?.expenses?.fuel || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Branch Rent & Facilities</span>
+                        <span className="text-[10px] text-stone-500">Rent, electricity & premises overheads</span>
+                      </div>
+                      <span className="font-mono font-black text-stone-900 text-sm">
+                        ₹{(plData?.expenses?.rent || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Staff Salaries & Field Incentives</span>
+                        <span className="text-[10px] text-stone-500">Officer compensation and wages</span>
+                      </div>
+                      <span className="font-mono font-black text-stone-900 text-sm">
+                        ₹{(plData?.expenses?.salaries || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center py-2 border-b border-[#ece3d4]">
+                      <div>
+                        <span className="font-bold text-stone-900 block">Printing, Stationery & General Admin</span>
+                        <span className="text-[10px] text-stone-500">Passbooks, paper, materials & running costs</span>
+                      </div>
+                      <span className="font-mono font-black text-stone-900 text-sm">
+                        ₹{(plData?.expenses?.general || 0).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center pt-2 font-black text-rose-950 text-sm">
+                      <span>TOTAL OPERATING EXPENSES</span>
+                      <span>₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

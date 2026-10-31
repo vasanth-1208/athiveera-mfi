@@ -48,5 +48,9 @@ const CustomerSchema: Schema = new Schema(
 CustomerSchema.index({ branchId: 1, name: 1 });
 CustomerSchema.index({ phone: 1 });
 CustomerSchema.index({ area: 1 });
+CustomerSchema.index({ aadharNumber: 1 });
+CustomerSchema.index({ voterIdNumber: 1 });
+CustomerSchema.index({ smartCardNumber: 1 });
+CustomerSchema.index({ panNumber: 1 });
 
 export const Customer = mongoose.model<ICustomer>('Customer', CustomerSchema);

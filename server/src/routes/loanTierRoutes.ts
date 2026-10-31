@@ -7,27 +7,32 @@ import { requireRole } from '../middleware/roles';
 const router = Router();
 router.use(authenticate);
 
-// Auto-seed helper
+// Auto-seed helper: ensure all default weekly and monthly tiers exist
 async function ensureDefaultTiers() {
-  const count = await LoanTier.countDocuments();
-  if (count === 0) {
-    const docs = LOAN_PRODUCT_PRESETS.map((p, idx) => ({
-      code: p.code,
-      name: p.name,
-      category: p.category,
-      frequency: p.frequency,
-      principal: p.principal,
-      interestAmount: p.interestAmount,
-      docCharges: p.docCharges,
-      savingsAmount: p.savingsAmount,
-      totalPayable: p.totalPayable,
-      tenureWeeks: p.tenureWeeks,
-      slabs: p.slabs,
-      schedule: p.schedule,
-      isActive: true,
-      sortOrder: idx + 1
-    }));
-    await LoanTier.insertMany(docs);
+  const oldCodes = ['MONTHLY_10K_5M', 'MONTHLY_20K_10M', 'MONTHLY_25K_10M', 'MONTHLY_30K_10M', 'MONTHLY_50K_10M'];
+  await LoanTier.deleteMany({ code: { $in: oldCodes } });
+
+  for (let idx = 0; idx < LOAN_PRODUCT_PRESETS.length; idx++) {
+    const p = LOAN_PRODUCT_PRESETS[idx];
+    const exists = await LoanTier.findOne({ code: p.code });
+    if (!exists) {
+      await LoanTier.create({
+        code: p.code,
+        name: p.name,
+        category: p.category,
+        frequency: p.frequency,
+        principal: p.principal,
+        interestAmount: p.interestAmount,
+        docCharges: p.docCharges,
+        savingsAmount: p.savingsAmount,
+        totalPayable: p.totalPayable,
+        tenureWeeks: p.tenureWeeks,
+        slabs: p.slabs,
+        schedule: p.schedule,
+        isActive: true,
+        sortOrder: idx + 1
+      });
+    }
   }
 }
 

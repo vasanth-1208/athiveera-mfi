@@ -27,6 +27,7 @@ export const LoanDetail: React.FC = () => {
   const isManagerOrAdmin = isAdmin || isManager;
   const queryClient = useQueryClient();
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
+  const [settleDate, setSettleDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [settleMethod, setSettleMethod] = useState<'CASH' | 'UPI' | 'BANK_TRANSFER'>('CASH');
   const [settleRemarks, setSettleRemarks] = useState('');
   const [manualDiscount, setManualDiscount] = useState<number>(0);
@@ -106,7 +107,7 @@ export const LoanDetail: React.FC = () => {
     queryFn: () => api.getUsers({ role: 'COLLECTION_STAFF', branchId: data?.loan?.branchId?._id || data?.loan?.branchId }),
     enabled: !!data?.loan
   });
-  const staffUsers = (staffUsersData?.users || []).filter((u: any) => u.status !== 'INACTIVE');
+  const staffUsers = (staffUsersData?.users || []).filter((u: any) => u.active !== false && u.status !== 'INACTIVE');
 
   const assignStaffMutation = useMutation({
     mutationFn: (staffId: string) => api.assignLoanStaff(id!, staffId),
@@ -270,6 +271,8 @@ export const LoanDetail: React.FC = () => {
               loan.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' :
               loan.status === 'SUBMITTED' ? 'bg-blue-100 text-blue-800' :
               loan.status === 'APPROVED' ? 'bg-teal-100 text-teal-800' :
+              loan.status === 'BAD_DEBT' ? 'bg-purple-100 text-purple-900 border border-purple-300 font-black' :
+              loan.status === 'OVERDUE' ? 'bg-rose-100 text-rose-800 border border-rose-300 font-bold' :
               loan.status === 'SETTLED' ? 'bg-purple-100 text-purple-800' :
               'bg-slate-100 text-slate-600'
             }`}>
@@ -430,12 +433,19 @@ export const LoanDetail: React.FC = () => {
       </div>
 
       {/* Financial Account Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-2 ${loan.earlySettlementDiscount > 0 ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-4`}>
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <p className="text-[10px] uppercase font-semibold text-slate-400">Principal Disbursed</p>
           <p className="text-xl font-bold text-slate-900 mt-1">₹{loan.principal?.toLocaleString('en-IN')}</p>
           <p className="text-xs text-slate-500 mt-0.5">Interest: ₹{loan.interestAmount} ({loan.interestRate}%)</p>
         </div>
+        {loan.earlySettlementDiscount > 0 && (
+          <div className="bg-purple-50/70 p-4 rounded-xl border border-purple-200 shadow-xs">
+            <p className="text-[10px] uppercase font-bold text-purple-700">Interest Discount</p>
+            <p className="text-xl font-bold text-purple-900 mt-1">₹{loan.earlySettlementDiscount.toLocaleString('en-IN')}</p>
+            <p className="text-xs text-purple-600 mt-0.5">Early Closure Waiver</p>
+          </div>
+        )}
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <p className="text-[10px] uppercase font-semibold text-slate-400">Total Contractual</p>
           <p className="text-xl font-bold text-slate-900 mt-1">₹{loan.totalPayable?.toLocaleString('en-IN')}</p>
@@ -494,8 +504,11 @@ export const LoanDetail: React.FC = () => {
                   <td className="px-4 py-2 text-right">
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
                       inst.status === 'PAID' ? 'bg-emerald-100 text-emerald-800' :
+                      inst.status === 'BAD_DEBT' ? 'bg-purple-100 text-purple-900 border border-purple-300 font-black' :
                       inst.status === 'OVERDUE' ? 'bg-rose-100 text-rose-800 border border-rose-300 font-black' :
                       inst.status === 'PARTIAL' ? 'bg-amber-100 text-amber-800' :
+                      inst.status === 'DISCOUNT' ? 'bg-purple-100 text-purple-800 border border-purple-300 font-black' :
+                      inst.status === 'WAIVED' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
                       'bg-slate-100 text-slate-600'
                     }`}>
                       {inst.status === 'PAID' && <CheckCircle2 className="w-2.5 h-2.5" />}
@@ -540,15 +553,21 @@ export const LoanDetail: React.FC = () => {
                         year: 'numeric'
                       })}
                     </td>
-                    <td className="px-4 py-2.5 font-bold text-emerald-700">₹{p.amount?.toLocaleString('en-IN')}</td>
+                    <td className={`px-4 py-2.5 font-bold ${p.paymentMethod === 'DISCOUNT' ? 'text-purple-700 font-black' : 'text-emerald-700'}`}>
+                      ₹{p.amount?.toLocaleString('en-IN')}
+                    </td>
                     <td className="px-4 py-2.5">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#f6f0e4] text-amber-950 border border-[#ded3be]">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                        p.paymentMethod === 'DISCOUNT'
+                          ? 'bg-purple-100 text-purple-900 border-purple-300'
+                          : 'bg-[#f6f0e4] text-amber-950 border-[#ded3be]'
+                      }`}>
                         {p.paymentMethod}
                       </span>
                     </td>
                     <td className="px-4 py-2.5 font-mono text-stone-600 font-medium">{p.receiptNumber || '-'}</td>
                     <td className="px-4 py-2.5 text-stone-700 font-medium">{p.collectorId?.name || p.collectorName || 'Branch Staff'}</td>
-                    <td className="px-4 py-2.5 text-stone-600 italic">
+                    <td className={`px-4 py-2.5 ${p.paymentMethod === 'DISCOUNT' ? 'text-purple-900 font-bold not-italic' : 'text-stone-600 italic'}`}>
                       {p.isReversed ? (
                         <span className="text-rose-600 font-bold not-italic">REVERSED</span>
                       ) : (
@@ -705,6 +724,18 @@ export const LoanDetail: React.FC = () => {
                 </select>
               </div>
               <div>
+                <label className="block font-bold text-stone-800 mb-1">Settlement / Closing Date</label>
+                <input
+                  type="date"
+                  value={settleDate}
+                  onChange={(e) => setSettleDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-bold text-stone-900 focus:outline-none focus:border-amber-600 shadow-2xs"
+                />
+                <span className="text-[10px] text-stone-500">
+                  Specify actual date of collection / loan closure (defaults to today)
+                </span>
+              </div>
+              <div>
                 <label className="block font-bold text-stone-800 mb-1">Settlement Remarks</label>
                 <input
                   type="text"
@@ -735,7 +766,8 @@ export const LoanDetail: React.FC = () => {
                     remarks: settleRemarks,
                     discountAmount: discountVal,
                     deductSavings,
-                    settlementAmount: netPayoffAmount
+                    settlementAmount: netPayoffAmount,
+                    settlementDate: settleDate
                   });
                 }}
                 disabled={settleMutation.isPending}
@@ -865,6 +897,7 @@ export const LoanDetail: React.FC = () => {
                     >
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="OVERDUE">OVERDUE</option>
+                      <option value="BAD_DEBT">BAD_DEBT</option>
                       <option value="CLOSED">CLOSED</option>
                       <option value="SETTLED">SETTLED</option>
                       <option value="SUBMITTED">SUBMITTED</option>
@@ -885,6 +918,7 @@ export const LoanDetail: React.FC = () => {
                       <option value="THURSDAY">THURSDAY</option>
                       <option value="FRIDAY">FRIDAY</option>
                       <option value="SATURDAY">SATURDAY</option>
+                      <option value="SUNDAY">SUNDAY</option>
                     </select>
                   </div>
 

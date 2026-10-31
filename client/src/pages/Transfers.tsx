@@ -66,26 +66,32 @@ export const Transfers: React.FC = () => {
 
   const transfers = data?.transfers || [];
 
-  // Determine active branch perspective:
-  // If Madathukulam is selected, perspective is MDKM.
-  // If Pollachi or Consolidated is selected, default perspective is Pollachi.
-  const isMDKM = selectedBranch?.code === 'MDKM';
-  const targetCode = isMDKM ? 'MDKM' : 'POLLACHI';
-  const otherShort = isMDKM ? 'Pollachi' : 'MDKM';
+  // Determine active branch perspective dynamically (supports any number of current and future branches)
+  const activeBranch = selectedBranch || branches[0];
+  const targetId = activeBranch?._id;
+  const targetCode = activeBranch?.code;
+  const targetName = activeBranch?.name || 'Selected Branch';
 
   // Dynamic aggregates
-  const receivedList = transfers.filter((t: any) => t.destinationBranchId?.code === targetCode);
+  const receivedList = transfers.filter((t: any) => 
+    (t.destinationBranchId?._id && targetId && String(t.destinationBranchId._id) === String(targetId)) ||
+    t.destinationBranchId?.code === targetCode
+  );
   const totalReceived = receivedList.reduce((s: number, t: any) => s + (t.amount || 0), 0);
   const receivedCount = receivedList.length;
 
-  const paidList = transfers.filter((t: any) => t.sourceBranchId?.code === targetCode);
+  const paidList = transfers.filter((t: any) => 
+    (t.sourceBranchId?._id && targetId && String(t.sourceBranchId._id) === String(targetId)) ||
+    t.sourceBranchId?.code === targetCode
+  );
   const totalPaid = paidList.reduce((s: number, t: any) => s + (t.amount || 0), 0);
   const paidCount = paidList.length;
 
   const netBalance = totalReceived - totalPaid;
 
   const filteredTransfers = transfers.filter((t: any) => {
-    const isReceived = t.destinationBranchId?.code === targetCode;
+    const isReceived = (t.destinationBranchId?._id && targetId && String(t.destinationBranchId._id) === String(targetId)) ||
+      t.destinationBranchId?.code === targetCode;
     if (directionFilter === 'RECEIVED' && !isReceived) return false;
     if (directionFilter === 'PAID' && isReceived) return false;
 
@@ -110,18 +116,17 @@ export const Transfers: React.FC = () => {
             <span>Branch-to-Branch Cash Transfers</span>
           </h2>
           <p className="text-xs text-stone-500 font-medium mt-0.5">
-            Canonical CASH TRANFER register: verified liquidity movements and expense funding between Pollachi and Madathukulam branches.
+            Canonical CASH TRANSFER register: verified liquidity movements and inter-branch settlement records across branch offices.
           </p>
         </div>
         <button
           onClick={() => {
-            const pollachi = branches.find((b: any) => b.code === 'POLLACHI');
-            const mdkm = branches.find((b: any) => b.code === 'MDKM');
+            const otherBranch = branches.find((b: any) => String(b._id) !== String(activeBranch?._id)) || branches[0];
             setIsModalOpen(true);
             setFormData({
               ...formData,
-              sourceBranchId: isMDKM ? (mdkm?._id || '') : (pollachi?._id || ''),
-              destinationBranchId: isMDKM ? (pollachi?._id || '') : (mdkm?._id || '')
+              sourceBranchId: activeBranch?._id || '',
+              destinationBranchId: otherBranch?._id || ''
             });
           }}
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-stone-950 rounded-xl text-xs font-bold shadow-md shadow-amber-900/20 transition cursor-pointer"
@@ -149,9 +154,9 @@ export const Transfers: React.FC = () => {
             <ArrowDownLeft className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">Received from {otherShort}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">Received by Branch</p>
             <p className="text-xl font-black text-emerald-800 mt-0.5">₹{totalReceived.toLocaleString('en-IN')}</p>
-            <p className="text-[10px] text-stone-500 font-medium">{receivedCount} Inflow Transactions</p>
+            <p className="text-[10px] text-stone-500 font-medium">{receivedCount} Inflow Transactions ({targetName})</p>
           </div>
         </div>
 
@@ -160,9 +165,9 @@ export const Transfers: React.FC = () => {
             <ArrowUpRight className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-rose-800">Transferred to {otherShort}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-rose-800">Transferred Out</p>
             <p className="text-xl font-black text-rose-800 mt-0.5">₹{totalPaid.toLocaleString('en-IN')}</p>
-            <p className="text-[10px] text-stone-500 font-medium">{paidCount} Outflow Transactions</p>
+            <p className="text-[10px] text-stone-500 font-medium">{paidCount} Outflow Transactions ({targetName})</p>
           </div>
         </div>
 
@@ -171,10 +176,10 @@ export const Transfers: React.FC = () => {
             <Coins className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-900">Net Inter-Branch Balance</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-900">Net Balance ({targetName})</p>
             <p className="text-xl font-black text-amber-900 mt-0.5">₹{Math.abs(netBalance).toLocaleString('en-IN')}</p>
             <p className="text-[10px] text-stone-500 font-medium">
-              {isMDKM ? 'Net Transferred to Pollachi' : (selectedBranch?.code === 'POLLACHI' ? 'Net Pollachi Funds Inflow' : 'Net Consolidated Balance')}
+              {netBalance >= 0 ? `Net Funds Received by ${targetName}` : `Net Transferred Out from ${targetName}`}
             </p>
           </div>
         </div>

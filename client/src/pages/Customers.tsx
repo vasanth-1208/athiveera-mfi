@@ -8,7 +8,6 @@ import {
   Phone,
   ArrowUpRight,
   CheckCircle2,
-  MapPin,
   Edit3,
   Trash2,
   ShieldCheck,
@@ -18,8 +17,11 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
   Filter,
-  UserCheck
+  UserCheck,
+  AlertCircle
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
@@ -38,16 +40,27 @@ export const Customers: React.FC = () => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number | 'ALL'>(100);
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [formData, setFormData] = useState({
+  const initialFormData = {
     name: '',
     phone: '',
     nomineePhone: '',
     address: '',
     area: '',
+    smartCardNumber: '',
+    aadharNumber: '',
+    voterIdNumber: '',
+    panNumber: '',
     notes: ''
-  });
+  };
+
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [formData, setFormData] = useState(initialFormData);
   const [formError, setFormError] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState<{
+    field: string;
+    value: string;
+    customer: any;
+  } | null>(null);
 
   // Edit Customer Modal State (Manager & Admin)
   const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
@@ -68,6 +81,53 @@ export const Customers: React.FC = () => {
     notes: ''
   });
   const [editFormError, setEditFormError] = useState('');
+  const [editDuplicateWarning, setEditDuplicateWarning] = useState<{
+    field: string;
+    value: string;
+    customer: any;
+  } | null>(null);
+
+  const checkDuplicateForNew = (field: string, val: string) => {
+    if (!val || val.trim().length < 3) {
+      setDuplicateWarning(null);
+      return;
+    }
+    const cleanVal = val.trim();
+    api.checkCustomerDuplicate({ [field]: cleanVal })
+      .then((res: any) => {
+        if (res?.exists && res?.customer) {
+          setDuplicateWarning({
+            field: res.matchedField,
+            value: res.matchedValue || cleanVal,
+            customer: res.customer
+          });
+        } else {
+          setDuplicateWarning(prev => (prev?.value === cleanVal ? null : prev));
+        }
+      })
+      .catch(() => {});
+  };
+
+  const checkDuplicateForEdit = (field: string, val: string) => {
+    if (!val || val.trim().length < 3) {
+      setEditDuplicateWarning(null);
+      return;
+    }
+    const cleanVal = val.trim();
+    api.checkCustomerDuplicate({ [field]: cleanVal, excludeId: editingCustomer?._id })
+      .then((res: any) => {
+        if (res?.exists && res?.customer) {
+          setEditDuplicateWarning({
+            field: res.matchedField,
+            value: res.matchedValue || cleanVal,
+            customer: res.customer
+          });
+        } else {
+          setEditDuplicateWarning(prev => (prev?.value === cleanVal ? null : prev));
+        }
+      })
+      .catch(() => {});
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['customers', selectedBranchId, search, area, page, pageSize, sortBy],
@@ -114,7 +174,8 @@ export const Customers: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       setIsModalOpen(false);
-      setFormData({ name: '', phone: '', nomineePhone: '', address: '', area: '', notes: '' });
+      setFormData(initialFormData);
+      setDuplicateWarning(null);
       setFormError('');
     },
     onError: (err: any) => {
@@ -198,6 +259,50 @@ export const Customers: React.FC = () => {
   const customers = data?.customers || [];
   const counts = data?.counts || { total: 0, active: 0, closed: 0, activeLoansCount: 0, closedLoansCount: 0 };
   const pagination = data?.pagination || { page: 1, limit: 100, total: 0, pages: 1 };
+
+  const [custSortCol, setCustSortCol] = useState<string>('customerId');
+  const [custSortDir, setCustSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const handleCustSort = (col: string) => {
+    if (custSortCol === col) {
+      setCustSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setCustSortCol(col);
+      setCustSortDir('asc');
+    }
+  };
+
+  const sortedCustomers = [...customers].sort((a: any, b: any) => {
+    let valA = '';
+    let valB = '';
+    if (custSortCol === 'customerId') {
+      const numA = parseInt((a.customerId || '').replace(/\D/g, ''), 10) || 0;
+      const numB = parseInt((b.customerId || '').replace(/\D/g, ''), 10) || 0;
+      return custSortDir === 'asc' ? numA - numB : numB - numA;
+    }
+    if (custSortCol === 'name') {
+      valA = a.name || '';
+      valB = b.name || '';
+    } else if (custSortCol === 'phone') {
+      valA = a.phone || '';
+      valB = b.phone || '';
+    } else if (custSortCol === 'nomineePhone') {
+      valA = a.nomineePhone || '';
+      valB = b.nomineePhone || '';
+    } else if (custSortCol === 'area') {
+      valA = a.area || '';
+      valB = b.area || '';
+    } else if (custSortCol === 'group') {
+      valA = a.activeGroupId?.name || '';
+      valB = b.activeGroupId?.name || '';
+    } else if (custSortCol === 'loan') {
+      const balA = a.loan?.balanceOutstanding ?? 0;
+      const balB = b.loan?.balanceOutstanding ?? 0;
+      return custSortDir === 'asc' ? balA - balB : balB - balA;
+    }
+    const cmp = valA.localeCompare(valB);
+    return custSortDir === 'asc' ? cmp : -cmp;
+  });
 
   return (
     <div className="space-y-6">
@@ -292,25 +397,7 @@ export const Customers: React.FC = () => {
             )}
           </div>
 
-          {/* Area Filter */}
-          <div className="relative sm:w-44">
-            <MapPin className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              value={area}
-              onChange={(e) => handleAreaChange(e.target.value)}
-              placeholder="Filter by area..."
-              className="w-full pl-9 pr-8 py-2 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-800 focus:outline-none focus:border-amber-600 shadow-xs"
-            />
-            {area && (
-              <button
-                onClick={() => handleAreaChange('')}
-                className="absolute right-2.5 top-2.5 text-stone-400 hover:text-stone-700 cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
+
 
           {/* Sort Dropdown */}
           <div className="relative sm:w-56">
@@ -355,13 +442,76 @@ export const Customers: React.FC = () => {
           <table className="w-full text-left text-xs">
             <thead className="bg-[#f6f0e4] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ded3be]">
               <tr>
-                <th className="px-4 py-3">Customer ID</th>
-                <th className="px-4 py-3">Borrower Name</th>
-                <th className="px-4 py-3">Primary Phone</th>
-                <th className="px-4 py-3">Nominee Phone</th>
-                <th className="px-4 py-3">Operational Area</th>
-                <th className="px-4 py-3">Assigned Group</th>
-                <th className="px-4 py-3">Loan Status & Balance</th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('customerId')}>
+                  <div className="flex items-center gap-1">
+                    <span>Customer ID</span>
+                    {custSortCol === 'customerId' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('name')}>
+                  <div className="flex items-center gap-1">
+                    <span>Borrower Name</span>
+                    {custSortCol === 'name' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('phone')}>
+                  <div className="flex items-center gap-1">
+                    <span>Primary Phone</span>
+                    {custSortCol === 'phone' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('nomineePhone')}>
+                  <div className="flex items-center gap-1">
+                    <span>Nominee Phone</span>
+                    {custSortCol === 'nomineePhone' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('area')}>
+                  <div className="flex items-center gap-1">
+                    <span>Operational Area</span>
+                    {custSortCol === 'area' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('group')}>
+                  <div className="flex items-center gap-1">
+                    <span>Assigned Group</span>
+                    {custSortCol === 'group' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleCustSort('loan')}>
+                  <div className="flex items-center gap-1">
+                    <span>Loan Status & Balance</span>
+                    {custSortCol === 'loan' ? (
+                      custSortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-4 py-3 text-right">Action</th>
               </tr>
             </thead>
@@ -372,8 +522,8 @@ export const Customers: React.FC = () => {
                     Loading customer directory...
                   </td>
                 </tr>
-              ) : customers.length > 0 ? (
-                customers.map((c: any) => (
+              ) : sortedCustomers.length > 0 ? (
+                sortedCustomers.map((c: any) => (
                   <tr key={c._id} className="hover:bg-[#fbf7f0] transition">
                     <td className="px-4 py-3.5 font-mono font-bold text-stone-800">{c.customerId}</td>
                     <td className="px-4 py-3.5 font-bold text-stone-900">{c.name}</td>
@@ -614,7 +764,10 @@ export const Customers: React.FC = () => {
                   <input
                     type="text"
                     value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    onChange={(e) => {
+                      setFormData({ ...formData, phone: e.target.value });
+                      checkDuplicateForNew('phone', e.target.value);
+                    }}
                     placeholder="10-digit number"
                     className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600"
                   />
@@ -630,6 +783,82 @@ export const Customers: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* KYC Identification Inputs */}
+              <div className="space-y-2 pt-1 border-t border-[#ded3be]">
+                <span className="font-bold text-stone-700 text-[11px] block">Government KYC Credentials</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-stone-800 text-[10px] mb-0.5">Aadhaar Card #</label>
+                    <input
+                      type="text"
+                      maxLength={14}
+                      value={formData.aadharNumber}
+                      onChange={(e) => {
+                        setFormData({ ...formData, aadharNumber: e.target.value });
+                        checkDuplicateForNew('aadharNumber', e.target.value);
+                      }}
+                      placeholder="12-digit Aadhaar"
+                      className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-stone-800 text-[10px] mb-0.5">Smart Card (Ration) #</label>
+                    <input
+                      type="text"
+                      value={formData.smartCardNumber}
+                      onChange={(e) => {
+                        setFormData({ ...formData, smartCardNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForNew('smartCardNumber', e.target.value);
+                      }}
+                      placeholder="e.g. 33/G/0294821"
+                      className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600 uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-stone-800 text-[10px] mb-0.5">Voter ID #</label>
+                    <input
+                      type="text"
+                      value={formData.voterIdNumber}
+                      onChange={(e) => {
+                        setFormData({ ...formData, voterIdNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForNew('voterIdNumber', e.target.value);
+                      }}
+                      placeholder="e.g. TN/12/084/102948"
+                      className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600 uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-stone-800 text-[10px] mb-0.5">PAN Card #</label>
+                    <input
+                      type="text"
+                      maxLength={10}
+                      value={formData.panNumber}
+                      onChange={(e) => {
+                        setFormData({ ...formData, panNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForNew('panNumber', e.target.value);
+                      }}
+                      placeholder="e.g. ABCDE1234F"
+                      className="w-full px-3 py-1.5 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600 uppercase"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Real-time duplicate warning */}
+              {duplicateWarning && (
+                <div className="p-2.5 bg-rose-50 border-2 border-rose-400 rounded-xl text-rose-800 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">
+                      ⚠️ Duplicate Number! Already exists in system.
+                    </p>
+                    <p className="text-[11px] text-rose-700 mt-0.5">
+                      Matched {duplicateWarning.field} (<strong>{duplicateWarning.value}</strong>) belonging to: <strong>{duplicateWarning.customer.name}</strong> ({duplicateWarning.customer.customerId} • Area: {duplicateWarning.customer.area || 'N/A'})
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block font-bold text-stone-800 mb-1">Operational Area / Village</label>
@@ -724,7 +953,10 @@ export const Customers: React.FC = () => {
                     <input
                       type="text"
                       value={editFormData.phone}
-                      onChange={(e) => setEditFormData({ ...editFormData, phone: e.target.value })}
+                      onChange={(e) => {
+                        setEditFormData({ ...editFormData, phone: e.target.value });
+                        checkDuplicateForEdit('phone', e.target.value);
+                      }}
                       placeholder="e.g. 9876543210"
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600"
                     />
@@ -813,7 +1045,10 @@ export const Customers: React.FC = () => {
                     <input
                       type="text"
                       value={editFormData.smartCardNumber}
-                      onChange={(e) => setEditFormData({ ...editFormData, smartCardNumber: e.target.value.toUpperCase() })}
+                      onChange={(e) => {
+                        setEditFormData({ ...editFormData, smartCardNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForEdit('smartCardNumber', e.target.value);
+                      }}
                       placeholder="e.g. 33/G/0294821"
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono uppercase text-stone-900 focus:outline-none focus:border-amber-600"
                     />
@@ -823,7 +1058,10 @@ export const Customers: React.FC = () => {
                     <input
                       type="text"
                       value={editFormData.aadharNumber}
-                      onChange={(e) => setEditFormData({ ...editFormData, aadharNumber: e.target.value })}
+                      onChange={(e) => {
+                        setEditFormData({ ...editFormData, aadharNumber: e.target.value });
+                        checkDuplicateForEdit('aadharNumber', e.target.value);
+                      }}
                       placeholder="e.g. 9845 2841 0294"
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono text-stone-900 focus:outline-none focus:border-amber-600"
                     />
@@ -833,7 +1071,10 @@ export const Customers: React.FC = () => {
                     <input
                       type="text"
                       value={editFormData.voterIdNumber}
-                      onChange={(e) => setEditFormData({ ...editFormData, voterIdNumber: e.target.value.toUpperCase() })}
+                      onChange={(e) => {
+                        setEditFormData({ ...editFormData, voterIdNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForEdit('voterIdNumber', e.target.value);
+                      }}
                       placeholder="e.g. TN/12/084/102948"
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono uppercase text-stone-900 focus:outline-none focus:border-amber-600"
                     />
@@ -843,12 +1084,30 @@ export const Customers: React.FC = () => {
                     <input
                       type="text"
                       value={editFormData.panNumber}
-                      onChange={(e) => setEditFormData({ ...editFormData, panNumber: e.target.value.toUpperCase() })}
+                      onChange={(e) => {
+                        setEditFormData({ ...editFormData, panNumber: e.target.value.toUpperCase() });
+                        checkDuplicateForEdit('panNumber', e.target.value);
+                      }}
                       placeholder="e.g. ABCDE1234F"
                       className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-mono uppercase text-stone-900 focus:outline-none focus:border-amber-600"
                     />
                   </div>
                 </div>
+
+                {/* Edit real-time duplicate warning */}
+                {editDuplicateWarning && (
+                  <div className="p-2.5 bg-rose-50 border-2 border-rose-400 rounded-xl text-rose-800 text-xs flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold">
+                        ⚠️ Duplicate KYC Detected! Number already registered.
+                      </p>
+                      <p className="text-[11px] text-rose-700 mt-0.5">
+                        Matched {editDuplicateWarning.field} (<strong>{editDuplicateWarning.value}</strong>) belonging to: <strong>{editDuplicateWarning.customer.name}</strong> ({editDuplicateWarning.customer.customerId} • Area: {editDuplicateWarning.customer.area || 'N/A'})
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Section 4: Status & Notes */}

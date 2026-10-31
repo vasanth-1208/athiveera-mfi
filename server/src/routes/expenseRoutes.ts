@@ -80,8 +80,8 @@ router.post('/', async (req: Request, res: Response) => {
       }
     }
 
-    if (isNaN(finalAmount) || finalAmount <= 0) {
-      res.status(400).json({ success: false, message: 'Expense amount must be greater than zero' });
+    if (isNaN(finalAmount) || finalAmount === 0) {
+      res.status(400).json({ success: false, message: 'Expense amount cannot be zero' });
       return;
     }
 
@@ -117,19 +117,23 @@ router.post('/', async (req: Request, res: Response) => {
       approvedById: req.user?.role !== 'COLLECTION_STAFF' ? req.user?.id : null
     });
 
-    // If auto-approved, record cashbook debit
+    // If auto-approved, record cashbook entry (Credit for negative/inflow, Debit for positive/outflow)
     if (expense.status === 'APPROVED') {
+      const isCreditInflow = expense.amount < 0;
+      const txType = isCreditInflow ? 'CREDIT' : 'DEBIT';
+      const txAmount = Math.abs(expense.amount);
+
       await recordCashbookEntry({
         branchId,
         transactionDate: expense.expenseDate,
-        type: 'DEBIT',
+        type: txType,
         accountType: paymentMethod,
         category: expense.category,
-        amount: expense.amount,
+        amount: txAmount,
         vNo: billRef || '',
         relatedEntityType: 'EXPENSE',
         relatedEntityId: expense._id,
-        description: expense.description || `Expense for ${expense.category}`,
+        description: expense.description || (isCreditInflow ? `Credit recovery for ${expense.category}` : `Expense for ${expense.category}`),
         createdById: req.user?.id
       });
     }
@@ -158,17 +162,21 @@ router.put('/:id/approve', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (r
     expense.approvedById = req.user?.id as any;
     await expense.save();
 
+    const isCreditInflow = expense.amount < 0;
+    const txType = isCreditInflow ? 'CREDIT' : 'DEBIT';
+    const txAmount = Math.abs(expense.amount);
+
     // Record cashbook entry
     await recordCashbookEntry({
       branchId: expense.branchId,
       transactionDate: expense.expenseDate,
-      type: 'DEBIT',
+      type: txType,
       accountType: expense.paymentMethod,
       category: expense.category,
-      amount: expense.amount,
+      amount: txAmount,
       relatedEntityType: 'EXPENSE',
       relatedEntityId: expense._id,
-      description: `Approved expense: ${expense.description}`,
+      description: `Approved ${isCreditInflow ? 'recovery credit' : 'expense'}: ${expense.description}`,
       createdById: req.user?.id
     });
 

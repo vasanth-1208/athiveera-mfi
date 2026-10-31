@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useBranch } from '../context/BranchContext';
 
 type MasterTab = 'CUSTOMERS' | 'LOANS' | 'INSTALLMENTS' | 'GROUPS';
 
@@ -364,13 +365,14 @@ const InlineDateCell: React.FC<InlineDateCellProps> = ({
 
 export const MasterData: React.FC = () => {
   const { isAdmin } = useAuth();
+  const { selectedBranchId } = useBranch();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<MasterTab>('GROUPS');
 
   // Overall Stats
   const { data: statsData } = useQuery({
-    queryKey: ['masterDataStats'],
-    queryFn: () => api.getMasterDataStats()
+    queryKey: ['masterDataStats', selectedBranchId],
+    queryFn: () => api.getMasterDataStats({ branchId: selectedBranchId })
   });
   const stats = statsData?.stats;
 
@@ -385,8 +387,8 @@ export const MasterData: React.FC = () => {
   const [mergeTargetId, setMergeTargetId] = useState('');
 
   const { data: custData, isLoading: isCustLoading } = useQuery({
-    queryKey: ['masterCustomers', custSearch, custArea, custPage],
-    queryFn: () => api.getMasterCustomers({ search: custSearch, area: custArea, page: custPage, limit: 50 })
+    queryKey: ['masterCustomers', selectedBranchId, custSearch, custArea, custPage],
+    queryFn: () => api.getMasterCustomers({ branchId: selectedBranchId, search: custSearch, area: custArea, page: custPage, limit: 50 })
   });
   const customers = custData?.customers || [];
   const custPagination = custData?.pagination || { page: 1, limit: 50, total: 0, pages: 1 };
@@ -438,8 +440,8 @@ export const MasterData: React.FC = () => {
   const [loanForm, setLoanForm] = useState<any>({});
 
   const { data: loansData, isLoading: isLoansLoading } = useQuery({
-    queryKey: ['masterLoans', loanSearch, loanStatus, loanRouteDay, loanPage],
-    queryFn: () => api.getMasterLoans({ search: loanSearch, status: loanStatus, routeDay: loanRouteDay, page: loanPage, limit: 50 })
+    queryKey: ['masterLoans', selectedBranchId, loanSearch, loanStatus, loanRouteDay, loanPage],
+    queryFn: () => api.getMasterLoans({ branchId: selectedBranchId, search: loanSearch, status: loanStatus, routeDay: loanRouteDay, page: loanPage, limit: 50 })
   });
   const loans = loansData?.loans || [];
   const loanPagination = loansData?.pagination || { page: 1, limit: 50, total: 0, pages: 1 };
@@ -467,10 +469,10 @@ export const MasterData: React.FC = () => {
   const [editingInstallment, setEditingInstallment] = useState<any | null>(null);
   const [instForm, setInstForm] = useState<any>({});
 
-  // Query ALL loans across the database for full selector access (all 351 loans)
+  // Query ALL loans across the database for full selector access (all loans)
   const { data: allLoansData, isLoading: isAllLoansLoading } = useQuery({
-    queryKey: ['masterAllLoans'],
-    queryFn: () => api.getMasterLoans({ limit: 'all' })
+    queryKey: ['masterAllLoans', selectedBranchId],
+    queryFn: () => api.getMasterLoans({ branchId: selectedBranchId, limit: 'all' })
   });
   const allLoans: any[] = allLoansData?.loans || [];
 
@@ -517,8 +519,8 @@ export const MasterData: React.FC = () => {
   const [grpForm, setGrpForm] = useState<any>({});
 
   const { data: grpData, isLoading: isGrpLoading } = useQuery({
-    queryKey: ['masterGroups', grpSearch, grpDay],
-    queryFn: () => api.getMasterGroups({ search: grpSearch, collectionDay: grpDay })
+    queryKey: ['masterGroups', selectedBranchId, grpSearch, grpDay],
+    queryFn: () => api.getMasterGroups({ branchId: selectedBranchId, search: grpSearch, collectionDay: grpDay })
   });
   const groups: any[] = grpData?.groups || [];
 
@@ -832,6 +834,9 @@ export const MasterData: React.FC = () => {
                 <option value="TUESDAY">TUESDAY Route</option>
                 <option value="WEDNESDAY">WEDNESDAY Route</option>
                 <option value="THURSDAY">THURSDAY Route</option>
+                <option value="FRIDAY">FRIDAY Route</option>
+                <option value="SATURDAY">SATURDAY Route</option>
+                <option value="SUNDAY">SUNDAY Route</option>
               </select>
 
               {/* Sorting Selector */}
@@ -972,7 +977,8 @@ export const MasterData: React.FC = () => {
                               { label: 'WEDNESDAY', value: 'WEDNESDAY' },
                               { label: 'THURSDAY', value: 'THURSDAY' },
                               { label: 'FRIDAY', value: 'FRIDAY' },
-                              { label: 'SATURDAY', value: 'SATURDAY' }
+                              { label: 'SATURDAY', value: 'SATURDAY' },
+                              { label: 'SUNDAY', value: 'SUNDAY' }
                             ]}
                             badgeClassName={() =>
                               'px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-2xs'
@@ -1012,12 +1018,16 @@ export const MasterData: React.FC = () => {
                           />
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`font-black text-xs px-2 py-0.5 rounded-md ${
-                            (g.activeLoans || 0) > 0 ? 'bg-amber-100 text-amber-950 border border-amber-300' : 'text-stone-400'
-                          }`}>
-                            {g.activeLoans || 0} Active
-                          </span>
-                          <span className="text-stone-400 ml-1.5 text-[11px]">({g.totalLoans || 0} total)</span>
+                          <div>
+                            <span className={`inline-block font-black text-xs px-2 py-0.5 rounded-md ${
+                              (g.activeLoans || 0) > 0 ? 'bg-amber-100 text-amber-950 border border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/60' : 'text-stone-400'
+                            }`}>
+                              {g.activeLoans || 0} Active
+                            </span>
+                            <span className="block text-stone-400 dark:text-stone-400 text-[11px] mt-0.5">
+                              ({g.totalLoans || 0} total)
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3 font-mono font-black text-rose-800">
                           ₹{(g.totalOutstanding || 0).toLocaleString('en-IN')}
@@ -1128,6 +1138,9 @@ export const MasterData: React.FC = () => {
                 <option value="TUESDAY">TUESDAY Route</option>
                 <option value="WEDNESDAY">WEDNESDAY Route</option>
                 <option value="THURSDAY">THURSDAY Route</option>
+                <option value="FRIDAY">FRIDAY Route</option>
+                <option value="SATURDAY">SATURDAY Route</option>
+                <option value="SUNDAY">SUNDAY Route</option>
               </select>
 
               <select
@@ -1697,6 +1710,9 @@ export const MasterData: React.FC = () => {
                 <option value="TUESDAY">TUESDAY Route</option>
                 <option value="WEDNESDAY">WEDNESDAY Route</option>
                 <option value="THURSDAY">THURSDAY Route</option>
+                <option value="FRIDAY">FRIDAY Route</option>
+                <option value="SATURDAY">SATURDAY Route</option>
+                <option value="SUNDAY">SUNDAY Route</option>
               </select>
 
               <select
@@ -1762,7 +1778,10 @@ export const MasterData: React.FC = () => {
                               { label: 'MONDAY', value: 'MONDAY' },
                               { label: 'TUESDAY', value: 'TUESDAY' },
                               { label: 'WEDNESDAY', value: 'WEDNESDAY' },
-                              { label: 'THURSDAY', value: 'THURSDAY' }
+                              { label: 'THURSDAY', value: 'THURSDAY' },
+                              { label: 'FRIDAY', value: 'FRIDAY' },
+                              { label: 'SATURDAY', value: 'SATURDAY' },
+                              { label: 'SUNDAY', value: 'SUNDAY' }
                             ]}
                             badgeClassName={() => 'text-[10px] font-bold text-amber-900 uppercase'}
                             onSave={async (val) => {
@@ -2125,6 +2144,9 @@ export const MasterData: React.FC = () => {
                     <option value="TUESDAY">TUESDAY</option>
                     <option value="WEDNESDAY">WEDNESDAY</option>
                     <option value="THURSDAY">THURSDAY</option>
+                    <option value="FRIDAY">FRIDAY</option>
+                    <option value="SATURDAY">SATURDAY</option>
+                    <option value="SUNDAY">SUNDAY</option>
                   </select>
                 </div>
               </div>
@@ -2423,6 +2445,9 @@ export const MasterData: React.FC = () => {
                     <option value="TUESDAY">TUESDAY</option>
                     <option value="WEDNESDAY">WEDNESDAY</option>
                     <option value="THURSDAY">THURSDAY</option>
+                    <option value="FRIDAY">FRIDAY</option>
+                    <option value="SATURDAY">SATURDAY</option>
+                    <option value="SUNDAY">SUNDAY</option>
                   </select>
                 </div>
               </div>

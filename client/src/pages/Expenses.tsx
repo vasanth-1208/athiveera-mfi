@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { TrendingDown, Plus, Fuel, CheckCircle, Clock, Edit3, Trash2, X } from 'lucide-react';
+import { TrendingDown, Plus, Fuel, CheckCircle, Clock, Edit3, Trash2, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 import { useAuth } from '../context/AuthContext';
@@ -91,7 +91,7 @@ export const Expenses: React.FC = () => {
     queryKey: ['users'],
     queryFn: () => api.getUsers()
   });
-  const staffList = usersData?.users || [];
+  const staffList = (usersData?.users || []).filter((u: any) => u.active !== false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['expenses', selectedBranchId],
@@ -226,19 +226,61 @@ export const Expenses: React.FC = () => {
   const expenses = data?.expenses || [];
   const totalAmount = data?.totalAmount || 0;
 
+  const [sortCol, setSortCol] = useState<string>('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  const handleSort = (col: string) => {
+    if (sortCol === col) {
+      setSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  };
+
+  const sortedExpenses = [...expenses].sort((a: any, b: any) => {
+    if (sortCol === 'date') {
+      const timeA = new Date(a.expenseDate).getTime();
+      const timeB = new Date(b.expenseDate).getTime();
+      return sortDir === 'asc' ? timeA - timeB : timeB - timeA;
+    }
+    if (sortCol === 'category') {
+      const cmp = (a.category || '').localeCompare(b.category || '');
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    if (sortCol === 'billRef') {
+      const cmp = (a.billRef || '').localeCompare(b.billRef || '');
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    if (sortCol === 'staff') {
+      const cmp = (a.staffName || '').localeCompare(b.staffName || '');
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    if (sortCol === 'amount') {
+      const numA = Number(a.amount) || 0;
+      const numB = Number(b.amount) || 0;
+      return sortDir === 'asc' ? numA - numB : numB - numA;
+    }
+    if (sortCol === 'status') {
+      const cmp = (a.status || '').localeCompare(b.status || '');
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    return 0;
+  });
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-black text-slate-900 tracking-tight">Operating Expenses & Travel KM</h2>
-          <p className="text-xs text-slate-500">
+          <h2 className="text-2xl font-black text-stone-900 dark:text-white tracking-tight">Operating Expenses & Travel KM</h2>
+          <p className="text-xs text-stone-500 dark:text-stone-300 font-medium mt-0.5">
             Track branch utility bills, office maintenance, salaries, and staff petrol claims with exact ₹2.16/km calculation
           </p>
         </div>
         <button
           onClick={() => setIsModalOpen(true)}
-          className="inline-flex items-center gap-2 px-3.5 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-stone-950 rounded-xl text-xs font-bold shadow-md shadow-amber-900/20 transition cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>Record Expense / KM Claim</span>
@@ -246,42 +288,96 @@ export const Expenses: React.FC = () => {
       </div>
 
       {/* Expense Summary Banner */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+      <div className="bg-[#fffdfa] dark:bg-[#23160e] p-5 rounded-2xl border border-[#ded3be] dark:border-[#442a1b] shadow-xs flex items-center justify-between">
         <div>
-          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Recorded Expenses</span>
-          <p className="text-3xl font-black text-slate-900 mt-1">₹{totalAmount.toLocaleString('en-IN')}</p>
+          <span className="text-xs font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Total Recorded Expenses</span>
+          <p className="text-3xl font-black text-stone-900 dark:text-white mt-1">₹{totalAmount.toLocaleString('en-IN')}</p>
         </div>
-        <div className="p-3 bg-brand-50 rounded-xl border border-brand-200 text-brand-700">
+        <div className="p-3 bg-rose-50 dark:bg-rose-950/40 rounded-2xl border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-400 shadow-xs">
           <TrendingDown className="w-6 h-6" />
         </div>
       </div>
 
       {/* Expenses Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      <div className="bg-[#fffdfa] dark:bg-[#23160e] rounded-2xl border border-[#ded3be] dark:border-[#442a1b] shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-100 text-slate-700 font-semibold uppercase tracking-wider border-b border-slate-200">
+            <thead className="bg-[#f6f0e4] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ded3be]">
               <tr>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Particulars / Category</th>
-                <th className="px-4 py-3">Bill / Ref</th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('date')}>
+                  <div className="flex items-center gap-1">
+                    <span>Date</span>
+                    {sortCol === 'date' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('category')}>
+                  <div className="flex items-center gap-1">
+                    <span>Particulars / Category</span>
+                    {sortCol === 'category' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('billRef')}>
+                  <div className="flex items-center gap-1">
+                    <span>Bill / Ref</span>
+                    {sortCol === 'billRef' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-4 py-3">KM / Rate</th>
-                <th className="px-4 py-3">Staff</th>
-                <th className="px-4 py-3">Amount</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('staff')}>
+                  <div className="flex items-center gap-1">
+                    <span>Staff</span>
+                    {sortCol === 'staff' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('amount')}>
+                  <div className="flex items-center gap-1">
+                    <span>Amount</span>
+                    {sortCol === 'amount' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('status')}>
+                  <div className="flex items-center gap-1">
+                    <span>Status</span>
+                    {sortCol === 'status' ? (
+                      sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-700" /> : <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-4 py-3">Description</th>
                 {(isAdmin || isManager) && <th className="px-4 py-3 text-right">Action</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-[#ece3d4]">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="text-center py-10 text-slate-400">
+                  <td colSpan={9} className="text-center py-10 text-stone-400 font-medium">
                     Loading operating expenses...
                   </td>
                 </tr>
-              ) : expenses.length > 0 ? (
-                expenses.map((e: any) => (
+              ) : sortedExpenses.length > 0 ? (
+                sortedExpenses.map((e: any) => (
                   <tr key={e._id} className="hover:bg-slate-50/80 transition">
                     <td className="px-4 py-3 font-mono text-slate-600">
                       {new Date(e.expenseDate).toLocaleDateString('en-IN')}
@@ -292,7 +388,9 @@ export const Expenses: React.FC = () => {
                       {e.travelKM > 0 ? `${e.travelKM} KM @ ₹${e.fuelRate}` : '-'}
                     </td>
                     <td className="px-4 py-3 text-slate-700">{e.staffName || 'Staff'}</td>
-                    <td className="px-4 py-3 font-bold text-slate-900 text-sm">₹{e.amount?.toLocaleString('en-IN')}</td>
+                    <td className={`px-4 py-3 font-bold text-sm ${e.amount < 0 ? 'text-emerald-700' : 'text-slate-900'}`}>
+                      {e.amount < 0 ? `-₹${Math.abs(e.amount).toLocaleString('en-IN')}` : `₹${e.amount?.toLocaleString('en-IN')}`}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${e.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                         }`}>
@@ -420,9 +518,12 @@ export const Expenses: React.FC = () => {
                   required
                   value={formData.amount}
                   onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                  placeholder="Total expense amount (e.g. 500)"
+                  placeholder="Total expense amount (e.g. 500 or -500)"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500 font-mono"
                 />
+                <p className="text-[10px] text-stone-500 mt-1">
+                  Enter positive (e.g. 500) for outgoing expense (deducted from vault). Enter negative (e.g. -500) for incoming credit / recovery (added to vault).
+                </p>
               </div>
 
               <div>
@@ -613,6 +714,9 @@ export const Expenses: React.FC = () => {
                   onChange={(e) => setEditExpenseForm({ ...editExpenseForm, amount: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:outline-none focus:border-amber-600"
                 />
+                <p className="text-[10px] text-stone-500 mt-1">
+                  Positive: outgoing expense (deducted from vault). Negative: incoming credit / recovery (added to vault).
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

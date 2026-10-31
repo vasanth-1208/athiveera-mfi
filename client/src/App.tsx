@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { BranchProvider } from './context/BranchContext';
 import { SidebarProvider } from './context/SidebarContext';
+import { ThemeProvider } from './context/ThemeContext';
 import { Layout } from './components/Layout';
 
 import { Login } from './pages/Login';
@@ -34,6 +35,8 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
+      staleTime: 30 * 1000, // 30s cache - instant 0ms tab switches!
+      gcTime: 5 * 60 * 1000,
       retry: 1
     }
   }
@@ -79,11 +82,12 @@ const HomeOrRedirect: React.FC = () => {
 export const App: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BranchProvider>
-          <SidebarProvider>
-            <BrowserRouter>
-            <Routes>
+      <ThemeProvider>
+        <AuthProvider>
+          <BranchProvider>
+            <SidebarProvider>
+              <BrowserRouter>
+              <Routes>
               <Route path="/login" element={<Login />} />
 
               <Route
@@ -124,6 +128,7 @@ export const App: React.FC = () => {
           </SidebarProvider>
         </BranchProvider>
       </AuthProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 };

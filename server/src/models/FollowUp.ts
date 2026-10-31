@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type FollowUpStatus = 'PENDING' | 'IN_PROGRESS' | 'RESOLVED' | 'ESCALATED' | 'PARTIAL' | 'OVERDUE';
+export type FollowUpStatus = 'PENDING' | 'IN_PROGRESS' | 'RESOLVED' | 'ESCALATED' | 'PARTIAL' | 'OVERDUE' | 'BAD_DEBT';
 
 export interface IFollowUp extends Document {
   customerId: mongoose.Types.ObjectId;
@@ -54,7 +54,7 @@ const FollowUpSchema: Schema = new Schema(
     nextFollowUpDate: { type: Date, default: null },
     status: { 
       type: String, 
-      enum: ['PENDING', 'IN_PROGRESS', 'RESOLVED', 'ESCALATED', 'PARTIAL', 'OVERDUE'], 
+      enum: ['PENDING', 'IN_PROGRESS', 'RESOLVED', 'ESCALATED', 'PARTIAL', 'OVERDUE', 'BAD_DEBT'], 
       default: 'PENDING' 
     },
     history: [

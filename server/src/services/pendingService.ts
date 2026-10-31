@@ -11,6 +11,8 @@ export interface PendingOverdueFilter {
   weekday?: string;
   status?: string;
   search?: string;
+  startDate?: string | Date;
+  endDate?: string | Date;
 }
 
 export interface PendingOverdueSummary {
@@ -19,6 +21,9 @@ export interface PendingOverdueSummary {
   totalBalancePending: number;
   totalCustomerKnown: number;
   totalRecords: number;
+  totalOverdueCount: number;
+  totalBadDebtsCount: number;
+  totalBadDebtsAmount: number;
   summaryByDay: Record<string, { actualTotal: number; savingsTotal: number; balanceTotal: number; count: number }>;
 }
 
@@ -28,14 +33,14 @@ export interface PendingOverdueResult {
 }
 
 /**
- * Single canonical source of truth for Pending & Overdue Collections.
+ * Single canonical source of truth for Overdue & Bad Debts Collections.
  * Used identically by both /api/pending and /api/dashboard to guarantee
  * that metrics, cards, and priority follow-ups match across all views.
  */
 export async function getPendingOverdueRegister(params: PendingOverdueFilter): Promise<PendingOverdueResult> {
-  const { branchId, weekday, status = 'PENDING', search } = params;
+  const { branchId, weekday, status = 'ALL', search } = params;
 
-  // Auto-mark any installment whose due date has passed (< today) and has positive balance as OVERDUE
+  // Auto-mark any installment whose due date has passed (< today) and has positive balance as OVERDUE (excluding BAD_DEBT)
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
@@ -43,7 +48,7 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     {
       dueDate: { $lt: todayStart },
       balanceAmount: { $gt: 0 },
-      status: { $ne: 'OVERDUE' }
+      status: { $nin: ['OVERDUE', 'BAD_DEBT', 'PAID', 'WAIVED', 'DISCOUNT'] }
     },
     { $set: { status: 'OVERDUE' } }
   );
@@ -54,15 +59,18 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     baseBranchFilter.branchId = branchId;
   }
 
-  // 1. Loans explicitly marked OVERDUE
-  const explicitOverdueLoans = await Loan.find({ status: 'OVERDUE', ...baseBranchFilter }).select('_id').lean();
-  const targetLoanIdSet = new Set<string>(explicitOverdueLoans.map(l => l._id.toString()));
+  // 1. Loans explicitly marked OVERDUE or BAD_DEBT
+  const explicitLoans = await Loan.find({ 
+    status: { $in: ['OVERDUE', 'BAD_DEBT'] }, 
+    ...baseBranchFilter 
+  }).select('_id').lean();
+  const targetLoanIdSet = new Set<string>(explicitLoans.map(l => l._id.toString()));
 
-  // 2. Loans having installments that are overdue or past due with positive balance
+  // 2. Loans having installments that are overdue or past due with positive balance, or BAD_DEBT
   const overdueInstsAll = await Installment.find({
     balanceAmount: { $gt: 0 },
     $or: [
-      { status: 'OVERDUE' },
+      { status: { $in: ['OVERDUE', 'BAD_DEBT'] } },
       { dueDate: { $lt: todayStart } }
     ]
   }).select('loanId').lean();
@@ -70,12 +78,12 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     if (i.loanId) targetLoanIdSet.add(i.loanId.toString());
   });
 
-  // 3. FollowUps marked PENDING with positive pending balance
-  const pendingFollowUps = await FollowUp.find({
-    status: 'PENDING',
+  // 3. FollowUps marked PENDING, OVERDUE, or BAD_DEBT with positive pending balance
+  const activeFollowUps = await FollowUp.find({
+    status: { $in: ['PENDING', 'OVERDUE', 'PARTIAL', 'BAD_DEBT'] },
     actualPending: { $gt: 0 }
   }).select('loanId customerId').lean();
-  pendingFollowUps.forEach(f => {
+  activeFollowUps.forEach(f => {
     if (f.loanId) targetLoanIdSet.add(f.loanId.toString());
   });
 
@@ -113,14 +121,28 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
       ]
     }).lean();
 
-    // Calculate actual overdue from installments
-    const overdueInsts = await Installment.find({
+    // Calculate actual overdue from installments (with optional date range filter)
+    const instQuery: any = {
       loanId: ol._id,
       $or: [
-        { status: 'OVERDUE' },
+        { status: { $in: ['OVERDUE', 'BAD_DEBT'] } },
         { dueDate: { $lt: todayStart }, balanceAmount: { $gt: 0 } }
       ]
-    }).lean();
+    };
+
+    if (params.startDate && params.endDate) {
+      const s = new Date(params.startDate);
+      s.setHours(0, 0, 0, 0);
+      const e = new Date(params.endDate);
+      e.setHours(23, 59, 59, 999);
+      instQuery.dueDate = { $gte: s, $lte: e };
+    }
+
+    const overdueInsts = await Installment.find(instQuery).lean();
+
+    if (params.startDate && params.endDate && overdueInsts.length === 0) {
+      continue;
+    }
 
     let actualPending = overdueInsts.reduce((sum, i) => sum + (i.balanceAmount || 0), 0);
     let overdueWeeks = overdueInsts.length;
@@ -136,6 +158,10 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
 
     const totalSavings = (ol as any).savingsAmount || (ol as any).savingsTotal || c?.totalSavings || 0;
     const balancePending = Math.max(0, actualPending - totalSavings);
+
+    const isBadDebt = ol.status === 'BAD_DEBT' || f?.status === 'BAD_DEBT' || overdueInsts.some(i => i.status === 'BAD_DEBT');
+    const effectiveStatus = isBadDebt ? 'BAD_DEBT' : ((actualPending > 0 && f?.status === 'RESOLVED') ? 'OVERDUE' : (f?.status || 'OVERDUE'));
+    const effectiveRemarks = (actualPending > 0 && f?.status === 'RESOLVED') ? '' : (f?.remarks || '');
 
     const item = {
       _id: f?._id || ol._id,
@@ -155,15 +181,20 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
       customerKnown: f?.customerKnown || actualPending,
       overdueWeeks: overdueWeeks || f?.overdueWeeks || 1,
       staffName: ol.assignedStaffName || g?.staffName || f?.staffName || 'Staff',
-      remarks: f?.remarks || 'Overdue installment requiring field recovery',
-      status: f?.status || 'PENDING',
+      remarks: effectiveRemarks,
+      status: effectiveStatus,
       history: f?.history || [],
       createdAt: f?.createdAt || ol.createdAt,
       updatedAt: f?.updatedAt || ol.updatedAt
     };
 
-    if (status && status !== 'ALL' && item.status !== status) {
-      continue;
+    if (status && status !== 'ALL') {
+      if (status === 'BAD_DEBT' && item.status !== 'BAD_DEBT') {
+        continue;
+      }
+      if (status === 'OVERDUE' && item.status === 'BAD_DEBT') {
+        continue;
+      }
     }
 
     if (search) {
@@ -178,7 +209,7 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     followUps.push(item);
   }
 
-  // Sort by overdueWeeks desc, then actualPending desc
+  // Sort by status (BAD_DEBT vs OVERDUE), overdueWeeks desc, then actualPending desc
   followUps.sort((a, b) => (b.overdueWeeks - a.overdueWeeks) || (b.actualPending - a.actualPending));
 
   // Aggregate weekday summary
@@ -186,13 +217,19 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     MONDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
     TUESDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
     WEDNESDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
-    THURSDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 }
+    THURSDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
+    FRIDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
+    SATURDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 },
+    SUNDAY: { actualTotal: 0, savingsTotal: 0, balanceTotal: 0, count: 0 }
   };
 
   let totalActualPending = 0;
   let totalSavings = 0;
   let totalBalancePending = 0;
   let totalCustomerKnown = 0;
+  let totalOverdueCount = 0;
+  let totalBadDebtsCount = 0;
+  let totalBadDebtsAmount = 0;
 
   followUps.forEach(f => {
     const day = (f.collectionDay || '').toUpperCase();
@@ -206,6 +243,13 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     totalSavings += f.totalSavings;
     totalBalancePending += f.balancePending;
     totalCustomerKnown += f.customerKnown;
+
+    if (f.status === 'BAD_DEBT') {
+      totalBadDebtsCount += 1;
+      totalBadDebtsAmount += f.actualPending;
+    } else {
+      totalOverdueCount += 1;
+    }
   });
 
   return {
@@ -216,6 +260,9 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
       totalBalancePending,
       totalCustomerKnown,
       totalRecords: followUps.length,
+      totalOverdueCount,
+      totalBadDebtsCount,
+      totalBadDebtsAmount,
       summaryByDay
     }
   };

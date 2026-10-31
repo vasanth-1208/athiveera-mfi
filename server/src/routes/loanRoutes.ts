@@ -8,7 +8,7 @@ import { Installment } from '../models/Installment';
 import { Payment } from '../models/Payment';
 import { FollowUp } from '../models/FollowUp';
 import { User } from '../models/User';
-import { calculateLoanSchedule, getNextWeekdayDate } from '../services/loanCalculator';
+import { calculateLoanSchedule, getNextWeekdayDate, calculateInstallmentDueDate } from '../services/loanCalculator';
 import { calculateEarlySettlement } from '../services/earlySettlementService';
 import { recordCashbookEntry } from '../services/cashbookService';
 import { getNextReceiptNumber } from '../services/receiptService';
@@ -108,7 +108,8 @@ router.get('/', async (req: Request, res: Response) => {
       .populate('assignedStaffId', 'name username phone')
       .sort({ createdAt: -1 })
       .skip((p - 1) * l)
-      .limit(l);
+      .limit(l)
+      .lean();
 
     res.json({
       success: true,
@@ -204,7 +205,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     res.json({
       success: true,
       loan: {
-        ...loan.toObject(),
+        ...(loan.toObject ? loan.toObject() : loan),
         totalPaid,
         outstandingTotal
       },
@@ -553,6 +554,10 @@ router.put('/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Requ
     if (notes !== undefined) loan.notes = notes;
     if (repaymentFrequency !== undefined) loan.repaymentFrequency = repaymentFrequency;
     if (loanCategory !== undefined) loan.loanCategory = loanCategory;
+    if (req.body.monthlyScheduleType !== undefined) loan.monthlyScheduleType = req.body.monthlyScheduleType;
+    if (req.body.monthlyDayOfMonth !== undefined) loan.monthlyDayOfMonth = req.body.monthlyDayOfMonth;
+    if (req.body.monthlyWeekOrdinal !== undefined) loan.monthlyWeekOrdinal = req.body.monthlyWeekOrdinal;
+    if (req.body.monthlyWeekday !== undefined) loan.monthlyWeekday = req.body.monthlyWeekday;
 
     await loan.save();
 
@@ -788,8 +793,13 @@ router.post('/:id/disburse', async (req: Request, res: Response) => {
       docCharges: loan.docCharges,
       savingsAmount: loan.savingsAmount,
       tenureWeeks: loan.tenureWeeks,
+      frequency: loan.repaymentFrequency,
+      monthlyScheduleType: loan.monthlyScheduleType,
+      monthlyDayOfMonth: loan.monthlyDayOfMonth,
+      monthlyWeekOrdinal: loan.monthlyWeekOrdinal,
+      monthlyWeekday: loan.monthlyWeekday,
       startDate: new Date(disbursementDate),
-      collectionDay: group.collectionDay
+      collectionDay: loan.collectionDay || group.collectionDay
     });
 
     loan.status = 'ACTIVE';
@@ -869,7 +879,7 @@ router.get('/:id/settlement-quote', async (req: Request, res: Response) => {
 // Execute early settlement
 router.post('/:id/settle', async (req: Request, res: Response) => {
   try {
-    const { paymentMethod = 'CASH', referenceNo = '', remarks = '', discountAmount = 0, deductSavings = false, settlementAmount } = req.body;
+    const { paymentMethod = 'CASH', referenceNo = '', remarks = '', discountAmount = 0, deductSavings = false, settlementAmount, settlementDate } = req.body;
     const loan = await Loan.findById(req.params.id).populate('groupId');
     if (!loan) {
       res.status(404).json({ success: false, message: 'Loan not found' });
@@ -896,7 +906,7 @@ router.post('/:id/settle', async (req: Request, res: Response) => {
       ? Math.max(0, parseFloat(String(settlementAmount)))
       : calculatedPayoff;
 
-    const paymentDate = new Date();
+    const paymentDate = settlementDate ? new Date(settlementDate) : new Date();
 
     // Mark remaining installments as fully settled & paid with received amount
     const unpaidInstallments = await Installment.find({
@@ -956,7 +966,7 @@ router.post('/:id/settle', async (req: Request, res: Response) => {
     if (settleAmt > 0) {
       await recordCashbookEntry({
         branchId: loan.branchId,
-        transactionDate: new Date(),
+        transactionDate: paymentDate,
         type: 'CREDIT',
         category: `EARLY LOAN SETTLEMENT - ${(loan.groupId as any).name}`,
         amount: settleAmt,
@@ -1033,7 +1043,11 @@ router.post('/create-manager-loan', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'),
       noOfWeeks,
       weeksAmountSplit = [],
       status = 'ACTIVE',
-      enquiryId
+      enquiryId,
+      monthlyScheduleType = 'DATE_OF_MONTH',
+      monthlyDayOfMonth = 5,
+      monthlyWeekOrdinal = 2,
+      monthlyWeekday = 'FRIDAY'
     } = req.body;
 
     if (!customerName || !area || !loanAmount || !noOfWeeks) {
@@ -1063,6 +1077,18 @@ router.post('/create-manager-loan', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'),
       }
       if (!customer && customerPhone) {
         customer = await Customer.findOne({ phone: customerPhone, branchId });
+      }
+      if (!customer && aadharNumber && String(aadharNumber).trim().length >= 4) {
+        customer = await Customer.findOne({ aadharNumber: String(aadharNumber).trim() });
+      }
+      if (!customer && voterIdNumber && String(voterIdNumber).trim().length >= 3) {
+        customer = await Customer.findOne({ voterIdNumber: String(voterIdNumber).trim().toUpperCase() });
+      }
+      if (!customer && smartCardNumber && String(smartCardNumber).trim().length >= 3) {
+        customer = await Customer.findOne({ smartCardNumber: String(smartCardNumber).trim().toUpperCase() });
+      }
+      if (!customer && panNumber && String(panNumber).trim().length >= 5) {
+        customer = await Customer.findOne({ panNumber: String(panNumber).trim().toUpperCase() });
       }
     }
 
@@ -1218,6 +1244,10 @@ router.post('/create-manager-loan', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'),
       customerPhone: customer.phone || '',
       nomineePhone: customer.nomineePhone || '',
       weekSplit: splitSchedule,
+      monthlyScheduleType: frequency === 'MONTHLY' ? monthlyScheduleType : undefined,
+      monthlyDayOfMonth: frequency === 'MONTHLY' && monthlyScheduleType === 'DATE_OF_MONTH' ? Number(monthlyDayOfMonth) : undefined,
+      monthlyWeekOrdinal: frequency === 'MONTHLY' && monthlyScheduleType === 'DAY_OF_WEEK_PATTERN' ? Number(monthlyWeekOrdinal) : undefined,
+      monthlyWeekday: frequency === 'MONTHLY' && monthlyScheduleType === 'DAY_OF_WEEK_PATTERN' ? monthlyWeekday : undefined,
       outstandingPrincipal: principalNum,
       outstandingInterest: interestNum,
       outstandingTotal: totalPayableNum,
@@ -1226,15 +1256,22 @@ router.post('/create-manager-loan', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'),
       approvedAt: new Date()
     });
 
-    // 6. Create Installments in Database: strictly calculate next assigned collection day
+    // 6. Create Installments in Database: strictly calculate next assigned collection day or monthly schedule
     const effectiveCollectionDay = collectionDay || group.collectionDay || 'MONDAY';
-    const firstDueDate = getNextWeekdayDate(new Date(loanDate), effectiveCollectionDay);
 
     for (let i = 0; i < splitSchedule.length; i++) {
       const split = splitSchedule[i];
       const wkNum = split.week || (i + 1);
-      const dueDate = new Date(firstDueDate);
-      dueDate.setUTCDate(firstDueDate.getUTCDate() + (i * 7));
+      const dueDate = calculateInstallmentDueDate(
+        new Date(loanDate),
+        i,
+        frequency || 'WEEKLY',
+        effectiveCollectionDay,
+        monthlyScheduleType,
+        monthlyDayOfMonth ? parseInt(String(monthlyDayOfMonth)) : undefined,
+        monthlyWeekOrdinal ? parseInt(String(monthlyWeekOrdinal)) : undefined,
+        monthlyWeekday
+      );
 
       await Installment.create({
         loanId: newLoan._id,

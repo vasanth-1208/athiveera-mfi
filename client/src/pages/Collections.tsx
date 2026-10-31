@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { 
   Calendar, 
@@ -10,26 +10,28 @@ import {
   Clock, 
   User, 
   Phone, 
-  ArrowRight,
-  TrendingUp,
-  FolderTree,
-  Filter,
-  Users,
-  ChevronDown,
-  ChevronUp,
-  Building2,
-  CalendarDays,
-  Target,
-  ArrowUpRight,
-  Eye,
-  EyeOff,
+  ArrowRight, 
+  TrendingUp, 
+  FolderTree, 
+  Filter, 
+  Users, 
+  ChevronDown, 
+  ChevronUp, 
+  Building2, 
+  CalendarDays, 
+  Target, 
+  ArrowUpRight, 
+  Eye, 
+  EyeOff, 
+  Wallet, 
+  Save, 
   X
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 import { useAuth } from '../context/AuthContext';
 
-const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 const getTodayWeekday = (): string => {
   const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
@@ -40,6 +42,14 @@ const getTodayWeekday = (): string => {
   return 'MONDAY';
 };
 
+const getTodayDateString = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export const Collections: React.FC = () => {
   const { selectedBranchId } = useBranch();
   const { user, isAdmin, isManager } = useAuth();
@@ -48,11 +58,11 @@ export const Collections: React.FC = () => {
 
   const todayWeekday = getTodayWeekday();
   const [selectedDay, setSelectedDay] = useState<string>(todayWeekday);
-  const [activeTab, setActiveTab] = useState<'REGISTER' | 'STAFF_WISE'>('REGISTER');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayDateString());
+  const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [search, setSearch] = useState('');
   const [payingLoanId, setPayingLoanId] = useState<string | null>(null);
   const [payingGroupId, setPayingGroupId] = useState<string | null>(null);
-  const [expandedStaffId, setExpandedStaffId] = useState<string | null>(null);
   const [showCompletedGroups, setShowCompletedGroups] = useState<boolean>(false);
 
   // Optimistic tracking for instant zero-latency updates without waiting for server refetch
@@ -65,25 +75,259 @@ export const Collections: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'UPI' | 'BANK_TRANSFER'>('CASH');
   const [remarks, setRemarks] = useState('');
 
-  // Daily Sheet Query
+  const isCollectionStaff = user?.role === 'COLLECTION_STAFF';
+
+  // Staff Denominations Handover Modal State
+  const [isStaffDenomModalOpen, setIsStaffDenomModalOpen] = useState(false);
+  const [modalStaffTab, setModalStaffTab] = useState<string>('ALL');
+  const [denomDate, setDenomDate] = useState<string>(getTodayDateString());
+
+  // Staff List Query (Enabled for all roles to discover branch collection staff)
+  const { data: staffListData } = useQuery({
+    queryKey: ['staffList', selectedBranchId],
+    queryFn: () => api.getStaffList({ branchId: selectedBranchId }),
+  });
+  const staffList = staffListData?.staff || [];
+
+  // Denominations Query for Handover Modal (syncs with denomDate / selectedDate)
+  const { data: denomData } = useQuery({
+    queryKey: ['denominations', selectedBranchId, denomDate],
+    queryFn: () => api.getDenominations({ branchId: selectedBranchId, date: denomDate }),
+    enabled: isStaffDenomModalOpen
+  });
+
+  // Dynamic Staff Handover Form State: Map of staffKey (uppercase trimmed name) -> counts
+  interface StaffDenomForm {
+    notes500: number;
+    notes200: number;
+    notes100: number;
+    notes50: number;
+    notes20: number;
+    notes10: number;
+    coins: number;
+    sbAcc: number;
+    caAcc: number;
+  }
+
+  const emptyStaffForm: StaffDenomForm = {
+    notes500: 0,
+    notes200: 0,
+    notes100: 0,
+    notes50: 0,
+    notes20: 0,
+    notes10: 0,
+    coins: 0,
+    sbAcc: 0,
+    caAcc: 0
+  };
+
+  const calcStaffTotal = (form?: StaffDenomForm) => {
+    if (!form) return 0;
+    return (
+      (form.notes500 * 500) +
+      (form.notes200 * 200) +
+      (form.notes100 * 100) +
+      (form.notes50 * 50) +
+      (form.notes20 * 20) +
+      (form.notes10 * 10) +
+      (form.coins || 0) +
+      (form.sbAcc || 0) +
+      (form.caAcc || 0)
+    );
+  };
+
+  const [staffDenomForms, setStaffDenomForms] = useState<Record<string, StaffDenomForm>>({});
+
+  // Helper to match staff names without creating duplicate entries
+  const findStaffMatch = (rawName: string, candidates: Array<{ id?: string; name: string }>) => {
+    const rawClean = (rawName || '').toUpperCase().trim();
+    if (!rawClean) return null;
+    return candidates.find(candidate => {
+      const cClean = candidate.name.toUpperCase().trim();
+      if (cClean === rawClean) return true;
+      const cParts = cClean.split(/\s+/);
+      const rParts = rawClean.split(/\s+/);
+      if (cParts.some(p => p === rawClean) || rParts.some(p => p === cClean)) return true;
+      if (cClean.includes(rawClean) || rawClean.includes(cClean)) return true;
+      return false;
+    });
+  };
+
+  // Compute active collection staff dynamically for this branch without duplicates
+  const activeStaffList = useMemo(() => {
+    const list: Array<{ id?: string; name: string }> = [];
+
+    // 1. Staff from branch user database (source of truth)
+    staffList.forEach((s: any) => {
+      if (s.name && !list.some(item => item.name.toUpperCase().trim() === s.name.toUpperCase().trim())) {
+        list.push({ id: s._id, name: s.name });
+      }
+    });
+
+    // 2. Staff from saved denomination records if any (only add if not matched to existing staff!)
+    if (denomData?.denomination?.staffDenominations) {
+      denomData.denomination.staffDenominations.forEach((s: any) => {
+        if (s.staffName) {
+          const match = findStaffMatch(s.staffName, list);
+          if (!match) {
+            list.push({ name: s.staffName });
+          }
+        }
+      });
+    }
+
+    // 3. Logged-in collection staff if not in list
+    if (isCollectionStaff && user?.name) {
+      const match = findStaffMatch(user.name, list);
+      if (!match) {
+        list.push({ id: user.id || user._id, name: user.name });
+      }
+    }
+
+    // 4. Fallback defaults if no staff records exist yet
+    if (list.length === 0) {
+      list.push({ name: 'Vignesh P' });
+      list.push({ name: 'Chandra Sekar' });
+    }
+
+    return list;
+  }, [staffList, denomData, isCollectionStaff, user]);
+
+  // Populate dynamic forms from fetched denomination records
+  useEffect(() => {
+    if (denomData?.denomination?.staffDenominations && denomData.denomination.staffDenominations.length > 0) {
+      const nextForms: Record<string, StaffDenomForm> = {};
+      denomData.denomination.staffDenominations.forEach((s: any) => {
+        const match = findStaffMatch(s.staffName, activeStaffList);
+        const targetKey = match ? match.name.toUpperCase().trim() : s.staffName?.toUpperCase().trim();
+        if (targetKey) {
+          const hasVals = (s.notes500 || s.notes200 || s.notes100 || s.notes50 || s.notes20 || s.notes10 || s.sbAcc || s.caAcc);
+          const existing = nextForms[targetKey];
+          if (!existing || hasVals) {
+            nextForms[targetKey] = {
+              notes500: s.notes500 || 0,
+              notes200: s.notes200 || 0,
+              notes100: s.notes100 || 0,
+              notes50: s.notes50 || 0,
+              notes20: s.notes20 || 0,
+              notes10: s.notes10 || 0,
+              coins: s.coins || 0,
+              sbAcc: s.sbAcc || 0,
+              caAcc: s.caAcc || 0
+            };
+          }
+        }
+      });
+      setStaffDenomForms(prev => ({ ...prev, ...nextForms }));
+    }
+  }, [denomData, activeStaffList]);
+
+  const handleOpenStaffDenomModal = () => {
+    if (isCollectionStaff) {
+      const myStaffObj = activeStaffList.find((s: any) => 
+        s.name.toUpperCase().trim() === user?.name?.toUpperCase().trim() ||
+        (user?.name && s.name.toUpperCase().includes(user.name.toUpperCase().trim())) ||
+        (s.id && (s.id === user?.id || s.id === user?._id))
+      );
+      setModalStaffTab(myStaffObj?.name?.toUpperCase().trim() || activeStaffList[0]?.name?.toUpperCase().trim() || 'ALL');
+    } else if (selectedStaffId !== 'ALL') {
+      const selectedStaffObj = staffList.find((s: any) => s._id === selectedStaffId);
+      const stKey = selectedStaffObj?.name?.toUpperCase().trim();
+      if (stKey && activeStaffList.some((s: any) => s.name.toUpperCase().trim() === stKey)) {
+        setModalStaffTab(stKey);
+      } else {
+        setModalStaffTab('ALL');
+      }
+    } else {
+      setModalStaffTab('ALL');
+    }
+    setDenomDate(selectedDate);
+    setIsStaffDenomModalOpen(true);
+  };
+
+  const handleUpdateStaffField = (staffKey: string, field: keyof StaffDenomForm, value: number) => {
+    setStaffDenomForms(prev => ({
+      ...prev,
+      [staffKey]: {
+        ...(prev[staffKey] || emptyStaffForm),
+        [field]: value
+      }
+    }));
+  };
+
+  const grandCombinedTotal = useMemo(() => {
+    return activeStaffList.reduce((sum: number, s: any) => {
+      const key = s.name.toUpperCase().trim();
+      return sum + calcStaffTotal(staffDenomForms[key]);
+    }, 0);
+  }, [activeStaffList, staffDenomForms]);
+
+  const saveDenomMutation = useMutation({
+    mutationFn: (payload: any) => api.saveDenominations(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['denominations'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyLedger'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
+      queryClient.invalidateQueries({ queryKey: ['weeklySheet'] });
+      alert('Staff denomination handover tally successfully saved.');
+      setIsStaffDenomModalOpen(false);
+    },
+    onError: (err: any) => {
+      alert(err.message || 'Failed to save staff denominations');
+    }
+  });
+
+  const handleSaveStaffDenominations = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    let payloadStaffDenoms: any[] = [];
+    if (modalStaffTab !== 'ALL') {
+      const targetStaff = activeStaffList.find((s: any) => s.name.toUpperCase().trim() === modalStaffTab);
+      const form = staffDenomForms[modalStaffTab] || emptyStaffForm;
+      payloadStaffDenoms = [{
+        staffName: targetStaff?.name || modalStaffTab,
+        ...form,
+        total: calcStaffTotal(form)
+      }];
+    } else {
+      payloadStaffDenoms = activeStaffList.map((s: any) => {
+        const key = s.name.toUpperCase().trim();
+        const form = staffDenomForms[key] || emptyStaffForm;
+        return {
+          staffName: s.name,
+          ...form,
+          total: calcStaffTotal(form)
+        };
+      });
+    }
+
+    saveDenomMutation.mutate({
+      branchId: selectedBranchId,
+      date: denomDate,
+      staffDenominations: payloadStaffDenoms
+    });
+  };
+
+  // Daily Sheet Query (dynamically filtered by selected staff and selected date)
   const { data: dailySheetData, isLoading: isDailyLoading } = useQuery({
-    queryKey: ['dailySheet', selectedBranchId, selectedDay],
-    queryFn: () => api.getDailySheet({ branchId: selectedBranchId, weekday: selectedDay }),
-    enabled: activeTab === 'REGISTER' && selectedDay !== 'WEEKLY'
+    queryKey: ['dailySheet', selectedBranchId, selectedDay, selectedStaffId, selectedDate],
+    queryFn: () => api.getDailySheet({ 
+      branchId: selectedBranchId, 
+      weekday: selectedDay,
+      staffId: selectedStaffId !== 'ALL' ? selectedStaffId : undefined,
+      date: selectedDate
+    }),
+    enabled: selectedDay !== 'WEEKLY'
   });
 
-  // Weekly Sheet Query (Manager & Admin - Always fetched for live weekly route progress stats)
+  // Weekly Sheet Query (Manager & Admin - dynamically filtered by selected staff and selected date)
   const { data: weeklySheetData, isLoading: isWeeklyLoading } = useQuery({
-    queryKey: ['weeklySheet', selectedBranchId],
-    queryFn: () => api.getWeeklySheet({ branchId: selectedBranchId }),
+    queryKey: ['weeklySheet', selectedBranchId, selectedStaffId, selectedDate],
+    queryFn: () => api.getWeeklySheet({ 
+      branchId: selectedBranchId,
+      staffId: selectedStaffId !== 'ALL' ? selectedStaffId : undefined,
+      date: selectedDate
+    }),
     enabled: isManagerOrAdmin
-  });
-
-  // Staff-Wise Collections Query (Manager & Admin)
-  const { data: staffData, isLoading: isStaffLoading } = useQuery({
-    queryKey: ['staffCollections', selectedBranchId],
-    queryFn: () => api.getStaffCollections({ branchId: selectedBranchId }),
-    enabled: activeTab === 'STAFF_WISE' && isManagerOrAdmin
   });
 
   const recordMutation = useMutation({
@@ -254,6 +498,11 @@ export const Collections: React.FC = () => {
     ? (weeklySheetData?.weeklySummary?.weeklyCollected || 0)
     : rawGroups.reduce((sum: number, g: any) => sum + (g.collectedToday || 0), 0);
 
+  // Remaining to be collected for this week's due
+  const totalRouteRemaining = isWeekly
+    ? (weeklySheetData?.weeklySummary?.weeklyRemaining ?? Math.max(0, totalRouteExpected - totalRouteCollected))
+    : Math.max(0, totalRouteExpected - totalRouteCollected);
+
   const totalRouteMembers = isWeekly
     ? (weeklySheetData?.weeklySummary?.totalMembers || 0)
     : rawGroups.reduce((sum: number, g: any) => sum + (g.members?.length || 0), 0);
@@ -264,412 +513,209 @@ export const Collections: React.FC = () => {
 
   const weeklyDays = weeklySheetData?.days || {};
 
-  // Live Collection Stats: Today's Route vs Weekly Consolidated
-  const todayDayStat = weeklyDays[todayWeekday];
-  const todayExpected = todayDayStat?.expected ?? (
-    selectedDay === todayWeekday 
-      ? rawGroups.reduce((sum: number, g: any) => sum + (g.expectedTotal || 0), 0)
-      : 0
-  );
-  const todayCollected = todayDayStat?.collected ?? (
-    selectedDay === todayWeekday
-      ? rawGroups.reduce((sum: number, g: any) => sum + (g.collectedToday || 0), 0)
-      : 0
-  );
-
-  const weeklySummary = weeklySheetData?.weeklySummary;
-  const weeklyExpected = weeklySummary?.weeklyExpected || 0;
-  const weeklyCollected = weeklySummary?.weeklyCollected || 0;
-
   return (
     <div className="space-y-6">
-      {/* Header: Clean, Responsive, occupying full width with View Mode Toggle and Dual Today & Weekly Progress Indicators */}
-      <div className="flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-4">
-        <div className="max-w-2xl">
+      {/* Header: Title and Quick Action Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
           <h2 className="text-2xl font-black text-stone-900 tracking-tight">
-            {activeTab === 'STAFF_WISE' ? 'Staff-Wise Collections & Performance' : 'Daily Collections & Route Register'}
+            Daily Collections & Route Register
           </h2>
           <p className="text-xs text-stone-500 font-medium mt-0.5">
-            {activeTab === 'STAFF_WISE'
-              ? 'Real-time performance tracking per field collection officer across assigned groups, collection targets, and efficiency'
-              : 'Organized by collection weekday and consolidated weekly routes. Mark installments as Paid or record partial amounts.'}
+            Organized by collection weekday and consolidated weekly routes. Mark installments as Paid or record partial amounts.
           </p>
         </div>
 
-        {/* View Mode Toggle & Settled Groups Button & Dual Progress Indicators */}
-        <div className="flex flex-wrap items-center justify-start 2xl:justify-end gap-2.5">
-          {isManagerOrAdmin && (
-            <div className="flex items-center gap-2">
-              <div className="flex items-center bg-[#ece3d4] p-1 rounded-2xl border border-[#ded3be] shadow-xs">
-                <button
-                  onClick={() => setActiveTab('REGISTER')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'REGISTER'
-                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
-                      : 'text-stone-700 hover:text-stone-900'
-                  }`}
-                >
-                  <CalendarDays className="w-3.5 h-3.5" />
-                  <span>Route Register</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('STAFF_WISE')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    activeTab === 'STAFF_WISE'
-                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
-                      : 'text-stone-700 hover:text-stone-900'
-                  }`}
-                >
-                  <Users className="w-3.5 h-3.5" />
-                  <span>Staff-Wise Collections</span>
-                </button>
-              </div>
-
-              {/* Settled Groups Toggle Button - Top Left next to Route Register & Staff-Wise */}
+        {/* Action Buttons: Date Selector, Staff Denominations & Settled Groups Toggle */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Date Selector for Viewing Collections & Denominations for a Specific Date */}
+          <div className="flex items-center bg-white border border-[#ded3be] rounded-xl px-3 py-1.5 shadow-xs gap-2">
+            <Calendar className="w-4 h-4 text-amber-700 shrink-0" />
+            <span className="text-[10px] font-black uppercase text-stone-500 hidden sm:inline">Date:</span>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => {
+                const newDate = e.target.value;
+                if (!newDate) return;
+                setSelectedDate(newDate);
+                setDenomDate(newDate);
+                const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+                const parts = newDate.split('-');
+                const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+                const correspondingDay = dayNames[dateObj.getDay()];
+                if (selectedDay !== 'WEEKLY') {
+                  setSelectedDay(correspondingDay);
+                }
+              }}
+              className="text-xs font-bold text-stone-800 bg-transparent focus:outline-none cursor-pointer"
+            />
+            {selectedDate !== getTodayDateString() && (
               <button
                 type="button"
-                onClick={() => setShowCompletedGroups(prev => !prev)}
-                className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs border shrink-0 ${
-                  showCompletedGroups
-                    ? 'bg-[#251b14] text-amber-300 border-amber-800/60'
-                    : 'bg-white text-stone-700 border-[#ded3be] hover:bg-[#faf6ee]'
-                }`}
-                title={showCompletedGroups ? "Hide settled groups (Closed groups shown at top)" : "Show settled groups (Closed groups currently hidden)"}
+                onClick={() => {
+                  const today = getTodayDateString();
+                  setSelectedDate(today);
+                  setDenomDate(today);
+                  if (selectedDay !== 'WEEKLY') {
+                    setSelectedDay(todayWeekday);
+                  }
+                }}
+                className="text-[10px] bg-amber-100 hover:bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-black cursor-pointer transition"
+                title="Reset to today's date"
               >
-                {showCompletedGroups ? <Eye className="w-3.5 h-3.5 text-amber-400" /> : <EyeOff className="w-3.5 h-3.5 text-stone-500" />}
-                <span className="hidden sm:inline">{showCompletedGroups ? 'Settled Groups (Shown)' : 'Settled Groups (Hidden)'}</span>
-                <span className="sm:hidden">{showCompletedGroups ? 'Settled' : 'Settled'}</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
-                  showCompletedGroups ? 'bg-amber-400 text-stone-950' : 'bg-[#ece3d4] text-stone-700'
-                }`}>
-                  {totalCompletedGroups}
-                </span>
+                Today
               </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleOpenStaffDenomModal}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs border bg-white text-stone-800 border-[#ded3be] hover:bg-[#faf6ee]"
+            title="Open staff field collection denominations handover dialog"
+          >
+            <Wallet className="w-4 h-4 text-amber-700" />
+            <span>{isCollectionStaff ? 'My Handover Denominations' : 'Staff Denominations'}</span>
+          </button>
+
+          {/* Settled Groups Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowCompletedGroups(prev => !prev)}
+            className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs border shrink-0 ${
+              showCompletedGroups
+                ? 'bg-[#251b14] text-amber-300 border-amber-800/60'
+                : 'bg-white text-stone-700 border-[#ded3be] hover:bg-[#faf6ee]'
+            }`}
+            title={showCompletedGroups ? "Hide settled groups (Closed groups shown at top)" : "Show settled groups (Closed groups currently hidden)"}
+          >
+            {showCompletedGroups ? <Eye className="w-3.5 h-3.5 text-amber-400" /> : <EyeOff className="w-3.5 h-3.5 text-stone-500" />}
+            <span className="hidden sm:inline">{showCompletedGroups ? 'Settled Groups (Shown)' : 'Settled Groups (Hidden)'}</span>
+            <span className="sm:hidden">Settled</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+              showCompletedGroups ? 'bg-amber-400 text-stone-950' : 'bg-[#ece3d4] text-stone-700'
+            }`}>
+              {totalCompletedGroups}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* Route & Officer Selection Bar */}
+      <div className="flex flex-col gap-3">
+        {/* Officer Switcher (Manager & Admin only: All Officers vs specific field collector) */}
+        {isManagerOrAdmin && staffList.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap bg-[#fdfbf7] p-2 rounded-2xl border border-[#ded3be]">
+            <span className="text-xs font-bold text-stone-600 flex items-center gap-1.5 pl-1 shrink-0">
+              <Users className="w-4 h-4 text-amber-700" />
+              Officer View:
+            </span>
+            <div className="flex items-center bg-[#ece3d4] p-1 rounded-xl border border-[#ded3be] shadow-xs flex-wrap gap-1">
+              <button
+                type="button"
+                onClick={() => setSelectedStaffId('ALL')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  selectedStaffId === 'ALL'
+                    ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+              >
+                All Officers
+              </button>
+              {staffList.map((st: any) => (
+                <button
+                  key={st._id}
+                  type="button"
+                  onClick={() => setSelectedStaffId(st._id)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    selectedStaffId === st._id
+                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
+                      : 'text-stone-700 hover:text-stone-900'
+                  }`}
+                >
+                  {st.name}
+                </button>
+              ))}
             </div>
+          </div>
+        )}
+
+        {/* Route Tabs Bar (Dedicated horizontal scrollable bar with shrink-0 buttons) */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 max-w-full">
+          {/* Weekly View Button for Manager and Admin */}
+          {isManagerOrAdmin && (
+            <button
+              onClick={() => setSelectedDay('WEEKLY')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
+                selectedDay === 'WEEKLY'
+                  ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
+                  : 'bg-white border border-[#ded3be] text-stone-700 hover:bg-[#faf6ee]'
+              }`}
+            >
+              <FolderTree className="w-3.5 h-3.5 text-amber-500" />
+              <span>WEEKLY VIEW</span>
+            </button>
           )}
 
-          {/* Dual Progress Indicators: Today's Collection & Weekly Collection */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Today's Collection */}
-            <div className="flex items-center gap-2.5 bg-[#f6f0e4] border border-[#ded3be] rounded-2xl px-3 py-1.5 shadow-xs">
-              <HandCoins className="w-4 h-4 text-amber-700 shrink-0" />
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
-                    Today's:
-                  </span>
-                  <span className="text-xs font-black text-emerald-800">
-                    ₹{todayCollected.toLocaleString('en-IN')}
-                  </span>
-                  <span className="text-[10px] text-stone-500 font-semibold">
-                    / ₹{todayExpected.toLocaleString('en-IN')}
-                  </span>
-                </div>
-                <div className="w-28 bg-[#ece3d4] h-1.5 rounded-full mt-1 overflow-hidden">
-                  <div 
-                    className="bg-emerald-600 h-full rounded-full transition-all duration-300"
-                    style={{ width: `${todayExpected > 0 ? Math.min(100, (todayCollected / todayExpected) * 100) : 0}%` }}
-                  />
-                </div>
-              </div>
-            </div>
+          {/* Daily Route Tabs */}
+          {DAYS.map((day) => {
+            const isToday = day === todayWeekday;
+            const isSelected = selectedDay === day;
 
-            {/* Weekly Collection */}
-            <div className="flex items-center gap-2.5 bg-[#f6f0e4] border border-[#ded3be] rounded-2xl px-3 py-1.5 shadow-xs">
-              <CalendarDays className="w-4 h-4 text-amber-800 shrink-0" />
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
-                    Weekly:
+            return (
+              <button
+                key={day}
+                onClick={() => setSelectedDay(day)}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
+                  isSelected
+                    ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
+                    : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5 text-amber-500" />
+                <span>{day} ROUTE</span>
+                {isToday && (
+                  <span className={`text-[9px] px-1.5 py-0.2 rounded-md font-black tracking-wide uppercase ${
+                    isSelected
+                      ? 'bg-amber-400 text-stone-950'
+                      : 'bg-amber-100 text-amber-900 border border-amber-300'
+                  }`}>
+                    Today
                   </span>
-                  <span className="text-xs font-black text-emerald-800">
-                    ₹{weeklyCollected.toLocaleString('en-IN')}
-                  </span>
-                  <span className="text-[10px] text-stone-500 font-semibold">
-                    / ₹{weeklyExpected.toLocaleString('en-IN')}
-                  </span>
-                </div>
-                <div className="w-28 bg-[#ece3d4] h-1.5 rounded-full mt-1 overflow-hidden">
-                  <div 
-                    className="bg-amber-600 h-full rounded-full transition-all duration-300"
-                    style={{ width: `${weeklyExpected > 0 ? Math.min(100, (weeklyCollected / weeklyExpected) * 100) : 0}%` }}
-                  />
-                </div>
-              </div>
-            </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Search Bar Row (Cleanly placed below route tabs - NEVER overlays Sunday) */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search borrower, phone, group code, area..."
+              className="w-full pl-9 pr-8 py-2 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-800 focus:outline-none focus:border-amber-600 shadow-xs"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-2.5 text-stone-400 hover:text-stone-700 cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* VIEW: STAFF-WISE COLLECTIONS */}
-      {activeTab === 'STAFF_WISE' && isManagerOrAdmin && (
-        <div className="space-y-6">
-          {/* Staff Summary KPIs */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Field Officers</p>
-              <p className="text-xl font-black text-stone-900 mt-0.5">
-                {staffData?.staffSummaries?.length || 0} Officers
-              </p>
-              <span className="text-[10px] text-amber-800 font-semibold">Assigned Branch Staff</span>
-            </div>
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Expected Due</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
-                ₹{(staffData?.totals?.totalExpected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Daily route target</span>
-            </div>
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Collected Today</p>
-              <p className="text-xl font-black text-emerald-700 mt-0.5">
-                ₹{(staffData?.totals?.totalCollected || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-emerald-800 font-bold">
-                {staffData?.totals?.efficiencyPercent || 0}% Overall Collection Rate
-              </span>
-            </div>
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Shortfall / Balance Due</p>
-              <p className="text-xl font-black text-rose-700 mt-0.5">
-                ₹{(staffData?.totals?.totalShortfall || 0).toLocaleString('en-IN')}
-              </p>
-              <span className="text-[10px] text-stone-500 font-medium">Field pending collection</span>
-            </div>
-          </div>
-
-          {/* Staff Cards List */}
-          <div className="space-y-4">
-            {isStaffLoading ? (
-              <div className="bg-[#fffdfa] p-12 text-center text-xs text-stone-400 font-medium rounded-2xl border border-[#ded3be]">
-                Loading staff collection performance...
-              </div>
-            ) : staffData?.staffSummaries?.length > 0 ? (
-              staffData.staffSummaries.map((staff: any) => {
-                const isExpanded = expandedStaffId === staff.staffId;
-                const eff = staff.efficiencyPercent || 0;
-
-                return (
-                  <div key={staff.staffId} className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-                    {/* Staff Header Row */}
-                    <div className="p-4 bg-[#f6f0e4] border-b border-[#ded3be] flex flex-col md:flex-row md:items-center justify-between gap-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-11 h-11 rounded-2xl bg-[#251b14] text-amber-300 font-black text-base flex items-center justify-center border border-amber-800/60 shadow-xs shrink-0">
-                          {staff.name?.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-base font-black text-stone-900">{staff.name}</h3>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-[#ded3be] text-stone-700">
-                              {staff.role === 'COLLECTION_STAFF' ? 'Collection Staff' : 'Branch Manager'}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-3 text-xs text-stone-600 mt-0.5 font-medium">
-                            {staff.phone && staff.phone !== '-' ? (
-                              <a
-                                href={`tel:${staff.phone.replace(/[^0-9+]/g, '')}`}
-                                className="inline-flex items-center gap-1 font-mono text-emerald-800 hover:text-emerald-950 font-bold hover:underline cursor-pointer"
-                              >
-                                <Phone className="w-2.5 h-2.5 text-emerald-600" />
-                                <span>{staff.phone}</span>
-                              </a>
-                            ) : (
-                              <span className="text-stone-400 font-mono text-[11px]">No phone</span>
-                            )}
-                            <span>&bull;</span>
-                            <span>{staff.totalGroups} Assigned Groups</span>
-                            <span>&bull;</span>
-                            <span>{staff.totalBorrowers} Active Borrowers</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Staff Metrics & Progress */}
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="text-right">
-                          <span className="text-[10px] font-bold uppercase text-stone-500 block">Expected Due</span>
-                          <span className="font-black text-stone-900 text-sm">₹{staff.expectedAmount.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="h-7 w-px bg-[#ded3be] hidden sm:block" />
-                        <div className="text-right">
-                          <span className="text-[10px] font-bold uppercase text-stone-500 block">Collected Today</span>
-                          <span className="font-black text-emerald-700 text-sm">₹{staff.collectedToday.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="h-7 w-px bg-[#ded3be] hidden sm:block" />
-                        <div className="text-right">
-                          <span className="text-[10px] font-bold uppercase text-stone-500 block">Shortfall</span>
-                          <span className="font-black text-rose-700 text-sm">₹{staff.shortfall.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="h-7 w-px bg-[#ded3be] hidden sm:block" />
-                        {/* Efficiency pill */}
-                        <div className="min-w-[100px]">
-                          <div className="flex items-center justify-between text-[10px] font-black mb-1">
-                            <span className="text-stone-600">Efficiency</span>
-                            <span className={eff >= 80 ? 'text-emerald-700' : eff >= 50 ? 'text-amber-700' : 'text-rose-700'}>
-                              {eff}%
-                            </span>
-                          </div>
-                          <div className="w-24 bg-[#ece3d4] h-2 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-300 ${
-                                eff >= 80 ? 'bg-emerald-600' : eff >= 50 ? 'bg-amber-600' : 'bg-rose-600'
-                              }`}
-                              style={{ width: `${Math.min(100, eff)}%` }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Toggle Group Table Button */}
-                        <button
-                          onClick={() => setExpandedStaffId(isExpanded ? null : staff.staffId)}
-                          className="flex items-center gap-1 px-3 py-1.5 bg-white border border-[#ded3be] hover:bg-[#faf6ee] text-stone-800 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
-                        >
-                          <span>{isExpanded ? 'Hide Groups' : `View ${staff.groups.length} Groups`}</span>
-                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Expandable Group Breakdown Table */}
-                    {isExpanded && (
-                      <div className="overflow-x-auto border-t border-[#ded3be] bg-white">
-                        <table className="w-full text-left text-xs">
-                          <thead className="bg-[#fcf9f2] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ece3d4]">
-                            <tr>
-                              <th className="px-4 py-2.5">Group Code & Name</th>
-                              <th className="px-4 py-2.5">Route Day</th>
-                              <th className="px-4 py-2.5">Area</th>
-                              <th className="px-4 py-2.5">Borrowers</th>
-                              <th className="px-4 py-2.5">Expected (₹)</th>
-                              <th className="px-4 py-2.5">Collected Today (₹)</th>
-                              <th className="px-4 py-2.5 text-right">Shortfall (₹)</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-[#ece3d4]">
-                            {staff.groups?.length > 0 ? (
-                              staff.groups.map((grp: any) => (
-                                <tr key={grp.groupId} className="hover:bg-[#faf6ee] transition">
-                                  <td className="px-4 py-3">
-                                    <span className="font-bold text-stone-900 block">{grp.groupName}</span>
-                                    <span className="font-mono text-[10px] text-stone-500 font-semibold">Group #{grp.groupCode}</span>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-2xs">
-                                      {grp.collectionDay}
-                                    </span>
-                                  </td>
-                                  <td className="px-4 py-3 font-medium text-stone-700">{grp.area || '-'}</td>
-                                  <td className="px-4 py-3 font-bold text-stone-900">{grp.borrowersCount} Borrowers</td>
-                                  <td className="px-4 py-3 font-bold text-stone-900">₹{grp.expectedAmount.toLocaleString('en-IN')}</td>
-                                  <td className="px-4 py-3 font-bold text-emerald-700">₹{grp.collectedToday.toLocaleString('en-IN')}</td>
-                                  <td className="px-4 py-3 text-right font-bold text-rose-700">
-                                    ₹{grp.remainingDue.toLocaleString('en-IN')}
-                                  </td>
-                                </tr>
-                              ))
-                            ) : (
-                              <tr>
-                                <td colSpan={7} className="px-4 py-6 text-center text-stone-400 font-medium">
-                                  No groups currently assigned to this officer.
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            ) : (
-              <div className="bg-[#fffdfa] p-12 text-center text-xs text-stone-400 font-medium rounded-2xl border border-[#ded3be]">
-                No staff members found for this branch.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* VIEW: ROUTE REGISTER (DAILY / WEEKLY) */}
-      {activeTab === 'REGISTER' && (
-        <div className="space-y-6">
-          {/* Weekday Selection Bar & Search */}
-          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
-            {/* Route Tabs: WEEKLY (to the left of daily routes for Manager/Admin) + Daily Routes */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
-              {/* Weekly View Button for Manager and Admin */}
-              {isManagerOrAdmin && (
-                <button
-                  onClick={() => setSelectedDay('WEEKLY')}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap ${
-                    selectedDay === 'WEEKLY'
-                      ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-                      : 'bg-white border border-[#ded3be] text-stone-700 hover:bg-[#faf6ee]'
-                  }`}
-                >
-                  <FolderTree className="w-3.5 h-3.5 text-amber-500" />
-                  <span>WEEKLY VIEW</span>
-                </button>
-              )}
-
-              {/* Daily Route Tabs */}
-              {DAYS.map((day) => {
-                const isToday = day === todayWeekday;
-                const isSelected = selectedDay === day;
-
-                return (
-                  <button
-                    key={day}
-                    onClick={() => setSelectedDay(day)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap ${
-                      isSelected
-                        ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-                        : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
-                    }`}
-                  >
-                    <Calendar className="w-3.5 h-3.5 text-amber-500" />
-                    <span>{day} ROUTE</span>
-                    {isToday && (
-                      <span className={`text-[9px] px-1.5 py-0.2 rounded-md font-black tracking-wide uppercase ${
-                        isSelected
-                          ? 'bg-amber-400 text-stone-950'
-                          : 'bg-amber-100 text-amber-900 border border-amber-300'
-                      }`}>
-                        Today
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Search Bar: Expands to cleanly occupy the right space */}
-            <div className="flex items-center gap-2.5 flex-1 justify-start xl:justify-end min-w-0">
-              <div className="relative flex-1 max-w-md min-w-[200px]">
-                <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search borrower, phone, group code, area..."
-                  className="w-full pl-9 pr-8 py-2 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-800 focus:outline-none focus:border-amber-600 shadow-xs"
-                />
-                {search && (
-                  <button
-                    onClick={() => setSearch('')}
-                    className="absolute right-2.5 top-2.5 text-stone-400 hover:text-stone-700 cursor-pointer"
-                    title="Clear search"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
           {/* WEEKLY BREAKDOWN CARDS (When Weekly View is Selected) */}
           {isWeekly && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
               {DAYS.map((day) => {
                 const dayStat = weeklyDays[day] || { expected: 0, collected: 0, remaining: 0, groupsCount: 0 };
                 const isToday = day === todayWeekday;
@@ -732,14 +778,21 @@ export const Collections: React.FC = () => {
               </p>
               <p className="text-xl font-black text-emerald-700 mt-0.5">₹{totalRouteCollected.toLocaleString('en-IN')}</p>
               <span className="text-[10px] text-emerald-800 font-semibold">
-                {totalRouteExpected > 0 ? `${Math.round((totalRouteCollected / totalRouteExpected) * 100)}% Collected` : 'Up to date'}
+                Today marked as paid
               </span>
             </div>
             <div className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs">
               <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Remaining Balance Due</p>
-              <p className="text-xl font-black text-rose-700 mt-0.5">
-                ₹{Math.max(0, totalRouteExpected - totalRouteCollected).toLocaleString('en-IN')}
-              </p>
+              <div className="flex items-baseline justify-between gap-1.5 mt-0.5">
+                <p className="text-xl font-black text-rose-700">
+                  ₹{totalRouteRemaining.toLocaleString('en-IN')}
+                </p>
+                <span className="text-xs font-black px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0" title="Route Collection Efficiency">
+                  {totalRouteExpected > 0 
+                    ? `${Math.round((totalRouteCollected / totalRouteExpected) * 100)}%`
+                    : '100%'}
+                </span>
+              </div>
               <span className="text-[10px] text-stone-500 font-medium">To be collected</span>
             </div>
           </div>
@@ -760,7 +813,9 @@ export const Collections: React.FC = () => {
                 }, 0) || 0;
                 const grpExpected = item.expectedTotal || 0;
                 const grpCollected = (item.collectedToday || 0) + optAddedToGroup;
-                const grpRemaining = Math.max(0, grpExpected - grpCollected);
+                const grpRemaining = item.remainingDue !== undefined 
+                  ? Math.max(0, item.remainingDue - optAddedToGroup)
+                  : Math.max(0, grpExpected - grpCollected);
 
                 return (
                   <div key={item.group?._id} className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
@@ -839,7 +894,14 @@ export const Collections: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-[#ece3d4]">
                           {item.members?.length > 0 ? (
-                            item.members.map((m: any) => {
+                            [...item.members]
+                              .sort((a: any, b: any) => {
+                                const aBad = (a.installmentStatus === 'BAD_DEBT' || a.isBadDebt) ? 1 : 0;
+                                const bBad = (b.installmentStatus === 'BAD_DEBT' || b.isBadDebt) ? 1 : 0;
+                                if (aBad !== bBad) return aBad - bBad;
+                                return 0;
+                              })
+                              .map((m: any) => {
                               const opt = optimisticPaidLoans[m.loanId];
                               const isOptPaid = Boolean(opt);
                               const isFullyPaid = isOptPaid || m.isPaidToday || m.installmentStatus === 'PAID' || !m.installmentNumber || m.expectedAmount <= 0;
@@ -887,9 +949,20 @@ export const Collections: React.FC = () => {
                                   {/* Week Due */}
                                   <td className="px-4 py-3.5">
                                     {m.installmentNumber ? (
-                                      <span className="font-mono font-bold text-amber-950 bg-[#f6f0e4] px-2 py-0.5 rounded-lg border border-[#ded3be]">
-                                        Week {m.installmentNumber} of {m.tenureWeeks || 32}
-                                      </span>
+                                      <div>
+                                        <span className={`font-mono font-bold px-2 py-0.5 rounded-lg border text-xs ${
+                                          m.installmentStatus === 'OVERDUE' || (m.overdueWeeks && m.overdueWeeks > 0)
+                                            ? 'bg-rose-50 text-rose-900 border-rose-300 font-black'
+                                            : 'bg-[#f6f0e4] text-amber-950 border-[#ded3be]'
+                                        }`}>
+                                          Week {m.installmentNumber} of {m.tenureWeeks || 32}
+                                        </span>
+                                        {m.overdueWeeks > 1 && (
+                                          <span className="text-[10px] text-rose-700 font-bold block mt-1">
+                                            {m.overdueWeeks} weeks due up to today
+                                          </span>
+                                        )}
+                                      </div>
                                     ) : (
                                       <span className="font-bold text-emerald-700">All Weeks Cleared</span>
                                     )}
@@ -915,6 +988,32 @@ export const Collections: React.FC = () => {
                                           <CheckCircle2 className="w-3 h-3" />
                                           <span>Paid</span>
                                         </span>
+                                        {displayTodayPaid > 0 && (
+                                          <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                                            +₹{displayTodayPaid.toLocaleString('en-IN')} Collected
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : m.installmentStatus === 'BAD_DEBT' ? (
+                                      <div>
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-purple-100 text-purple-900 border border-purple-300">
+                                          <span>BAD DEBT</span>
+                                        </span>
+                                        <span className="text-[10px] text-purple-700 font-semibold block mt-0.5">
+                                          Uncollectible
+                                        </span>
+                                      </div>
+                                    ) : m.installmentStatus === 'OVERDUE' || (m.overdueWeeks && m.overdueWeeks > 0) ? (
+                                      <div>
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300">
+                                          <AlertCircle className="w-3 h-3 text-rose-600" />
+                                          <span>OVERDUE {m.overdueWeeks > 1 ? `(${m.overdueWeeks} Weeks)` : '(1 Week)'}</span>
+                                        </span>
+                                        {isPartial && (
+                                          <span className="text-[10px] text-amber-800 font-bold block mt-0.5">
+                                            Partial (₹{m.installmentPaid?.toLocaleString('en-IN')} Recd)
+                                          </span>
+                                        )}
                                         {displayTodayPaid > 0 && (
                                           <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
                                             +₹{displayTodayPaid.toLocaleString('en-IN')} Collected
@@ -950,28 +1049,50 @@ export const Collections: React.FC = () => {
                                   {/* Actions */}
                                   <td className="px-4 py-3.5 text-right">
                                     {!isFullyPaid ? (
-                                      <div className="flex items-center justify-end gap-2">
-                                        {/* 1-Click Fast Mark Paid Button */}
-                                        <button
-                                          onClick={() => handleQuickMarkPaid(m)}
-                                          disabled={isPayingThis || recordMutation.isPending}
-                                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
-                                          title="Mark full installment as collected"
-                                        >
-                                          <CheckCircle2 className="w-3.5 h-3.5" />
-                                          <span>{isPayingThis ? 'Recording...' : `Mark Paid (₹${m.expectedAmount})`}</span>
-                                        </button>
+                                      m.installmentStatus === 'BAD_DEBT' ? (
+                                        <div className="flex items-center justify-end gap-2">
+                                          <button
+                                            onClick={() => handleQuickMarkPaid(m)}
+                                            disabled={isPayingThis || recordMutation.isPending}
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
+                                            title="Record recovery payment for this bad debt"
+                                          >
+                                            <CheckCircle2 className="w-3.5 h-3.5" />
+                                            <span>{isPayingThis ? 'Recording...' : `Recover (₹${(m.expectedAmount || m.installmentExpected || 0).toLocaleString('en-IN')})`}</span>
+                                          </button>
+                                          <button
+                                            onClick={() => handleOpenPartialModal(m)}
+                                            disabled={isPayingThis || recordMutation.isPending}
+                                            className="px-2.5 py-1.5 bg-[#f6f0e4] hover:bg-[#ede3d0] text-amber-950 font-bold rounded-xl text-xs border border-[#ded3be] transition cursor-pointer disabled:opacity-50"
+                                            title="Record recovery payment for this bad debt"
+                                          >
+                                            Partial
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="flex items-center justify-end gap-2">
+                                          {/* 1-Click Fast Mark Paid Button */}
+                                          <button
+                                            onClick={() => handleQuickMarkPaid(m)}
+                                            disabled={isPayingThis || recordMutation.isPending}
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
+                                            title="Mark full installment as collected"
+                                          >
+                                            <CheckCircle2 className="w-3.5 h-3.5" />
+                                            <span>{isPayingThis ? 'Recording...' : `Mark Paid (₹${m.expectedAmount?.toLocaleString('en-IN')})`}</span>
+                                          </button>
 
-                                        {/* Mark Partial Button */}
-                                        <button
-                                          onClick={() => handleOpenPartialModal(m)}
-                                          disabled={isPayingThis || recordMutation.isPending}
-                                          className="px-3 py-1.5 bg-[#f6f0e4] hover:bg-[#ede3d0] text-amber-950 font-bold rounded-xl text-xs border border-[#ded3be] transition cursor-pointer disabled:opacity-50"
-                                          title="Record a custom or partial repayment amount"
-                                        >
-                                          Partial
-                                        </button>
-                                      </div>
+                                          {/* Mark Partial Button */}
+                                          <button
+                                            onClick={() => handleOpenPartialModal(m)}
+                                            disabled={isPayingThis || recordMutation.isPending}
+                                            className="px-3 py-1.5 bg-[#f6f0e4] hover:bg-[#ede3d0] text-amber-950 font-bold rounded-xl text-xs border border-[#ded3be] transition cursor-pointer disabled:opacity-50"
+                                            title="Record a custom or partial repayment amount"
+                                          >
+                                            Partial
+                                          </button>
+                                        </div>
+                                      )
                                     ) : (
                                       <span className="inline-flex items-center gap-1.5 text-emerald-700 font-bold text-xs bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
                                         <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -1029,8 +1150,6 @@ export const Collections: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
-      )}
 
       {/* Record Partial / Custom Collection Modal */}
       {isPartialModalOpen && partialMember && (
@@ -1061,8 +1180,8 @@ export const Collections: React.FC = () => {
                 <span className="font-bold text-amber-950">Week {partialMember.installmentNumber}</span>
               </div>
               <div className="flex justify-between border-t border-[#ded3be] pt-1.5">
-                <span className="text-stone-700 font-bold">Total Installment Due:</span>
-                <span className="font-black text-amber-950 text-sm">₹{partialMember.expectedAmount}</span>
+                <span className="text-stone-700 font-bold">Total Dues Up To Today:</span>
+                <span className="font-black text-amber-950 text-sm">₹{partialMember.expectedAmount?.toLocaleString('en-IN')}</span>
               </div>
             </div>
 
@@ -1085,7 +1204,7 @@ export const Collections: React.FC = () => {
 
                 {/* Quick Presets */}
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                  {[200, 300, 500, partialMember.expectedAmount].filter(Boolean).map((amt, idx) => (
+                  {[partialMember.expectedAmount, partialMember.totalOverdueDue, 500].filter(Boolean).filter((val, i, arr) => arr.indexOf(val) === i).map((amt, idx) => (
                     <button
                       key={idx}
                       type="button"
@@ -1096,7 +1215,11 @@ export const Collections: React.FC = () => {
                           : 'bg-white border-[#ded3be] text-stone-700 hover:bg-[#faf6ee]'
                       }`}
                     >
-                      {amt === partialMember.expectedAmount ? `Full: ₹${amt}` : `₹${amt}`}
+                      {amt === partialMember.totalOverdueDue && partialMember.overdueWeeks > 1 
+                        ? `Full Overdue (${partialMember.overdueWeeks} Wks): ₹${amt}` 
+                        : amt === partialMember.expectedAmount 
+                          ? `This Week: ₹${amt}` 
+                          : `₹${amt}`}
                     </button>
                   ))}
                 </div>
@@ -1163,6 +1286,250 @@ export const Collections: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Staff Field Collection Denominations Handover Modal */}
+      {isStaffDenomModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/80 p-4 backdrop-blur-xs">
+          <div className="bg-[#fffdfa] dark:bg-[#1a120c] rounded-2xl max-w-4xl w-full p-5 sm:p-6 space-y-4 shadow-2xl border border-amber-900/40 dark:border-[#442a1b] max-h-[92vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex flex-col gap-3 border-b border-[#ded3be] dark:border-[#382316] pb-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-black text-stone-900 dark:text-white flex items-center gap-2">
+                    <Wallet className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                    <span>{isCollectionStaff ? 'My Route Collection Denominations' : 'Staff Field Collection Denominations'}</span>
+                  </h3>
+                  <p className="text-xs text-stone-500 dark:text-stone-300 font-medium mt-0.5">
+                    {isCollectionStaff 
+                      ? `Enter currency notes and bank payments collected on your route (${user?.name || ''})`
+                      : `Enter currency notes and bank payments collected by field officers (${activeStaffList.map((s: any) => s.name).join(', ')})`}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-auto">
+                  <input
+                    type="date"
+                    value={denomDate}
+                    onChange={(e) => setDenomDate(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white dark:bg-[#2c1c12] border border-[#ded3be] dark:border-[#442a1b] rounded-xl text-xs font-bold text-stone-800 dark:text-stone-100 focus:outline-none focus:border-amber-600 shadow-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveStaffDenominations}
+                    disabled={saveDenomMutation.isPending}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-stone-950 font-black rounded-xl text-xs shadow-md shadow-amber-900/20 transition cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{saveDenomMutation.isPending ? 'Saving...' : isCollectionStaff ? 'Save My Handover' : 'Save Staff Handover'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsStaffDenomModalOpen(false)}
+                    className="p-1.5 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-[#f6f0e4] dark:hover:bg-[#2c1c12] rounded-lg transition cursor-pointer"
+                    title="Close"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Staff Switcher inside Modal for Manager / Admin */}
+              {!isCollectionStaff && (
+                <div className="flex items-center gap-2 pt-1 border-t border-[#ece3d4] dark:border-[#382316] overflow-x-auto pb-1">
+                  <span className="text-xs font-bold text-stone-600 dark:text-stone-300 shrink-0">Officer View:</span>
+                  <div className="flex items-center gap-1.5 p-1 bg-[#ede3d0]/60 dark:bg-[#2c1c12] rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setModalStaffTab('ALL')}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                        modalStaffTab === 'ALL'
+                          ? 'bg-[#251b14] dark:bg-amber-600 text-amber-300 dark:text-stone-950 shadow-xs'
+                          : 'text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+                      }`}
+                    >
+                      All Staff (Consolidated)
+                    </button>
+                    {activeStaffList.map((s: any) => {
+                      const sKey = s.name.toUpperCase().trim();
+                      return (
+                        <button
+                          key={sKey}
+                          type="button"
+                          onClick={() => setModalStaffTab(sKey)}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                            modalStaffTab === sKey
+                              ? 'bg-[#251b14] dark:bg-amber-600 text-amber-300 dark:text-stone-950 shadow-xs'
+                              : 'text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+                          }`}
+                        >
+                          {s.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Dynamic Staff Denomination Tables */}
+            <div className={modalStaffTab === 'ALL' && activeStaffList.length > 1 ? "grid grid-cols-1 md:grid-cols-2 gap-4" : "max-w-md mx-auto w-full"}>
+              {(modalStaffTab === 'ALL' ? activeStaffList : activeStaffList.filter((s: any) => s.name.toUpperCase().trim() === modalStaffTab)).map((staffObj: any) => {
+                const sKey = staffObj.name.toUpperCase().trim();
+                const form = staffDenomForms[sKey] || emptyStaffForm;
+                const staffTotal = calcStaffTotal(form);
+
+                return (
+                  <div key={sKey} className="bg-white dark:bg-[#23160e] rounded-2xl border border-[#ded3be] dark:border-[#442a1b] shadow-sm overflow-hidden">
+                    <div className="p-3 bg-gradient-to-r from-[#2a1c12] via-[#1e140d] to-[#2a1c12] border-b border-amber-900/50 text-center">
+                      <h4 className="text-xs font-black text-amber-300 tracking-widest uppercase flex items-center justify-center gap-2">
+                        <Users className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{staffObj.name}</span>
+                      </h4>
+                    </div>
+                    <div className="p-3 bg-[#faf6ee]/50 dark:bg-[#1a110a]">
+                      <table className="w-full text-center text-xs font-semibold">
+                        <thead className="bg-[#f6f0e4] dark:bg-[#2c1c12] text-amber-950 dark:text-amber-300 border-b border-[#ded3be] dark:border-[#442a1b] text-[11px] font-bold uppercase tracking-wider">
+                          <tr>
+                            <th className="py-2 px-3 text-left">Denomination</th>
+                            <th className="py-2 px-2 text-center">Count</th>
+                            <th className="py-2 px-3 text-right">Amount (₹)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#ece3d4] dark:divide-[#382316]">
+                          {[500, 200, 100, 50, 20, 10].map((denom) => {
+                            const fieldKey = `notes${denom}` as keyof StaffDenomForm;
+                            const countVal = form[fieldKey] || 0;
+                            return (
+                              <tr key={denom} className="hover:bg-[#f6f0e4]/60 dark:hover:bg-[#2c1c12]/60 transition">
+                                <td className="py-2 px-3 text-left">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-100/70 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 font-mono font-black text-xs border border-amber-300/50 dark:border-amber-800/50">
+                                    ₹{denom}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-2 text-center">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={countVal === 0 ? '' : countVal}
+                                    placeholder="0"
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      handleUpdateStaffField(sKey, fieldKey, v === '' ? 0 : (parseInt(v, 10) || 0));
+                                    }}
+                                    className="w-18 px-2 py-1 text-center font-bold text-stone-900 dark:text-white bg-white dark:bg-[#2c1c12] border border-stone-300 dark:border-[#442a1b] rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition shadow-inner font-mono text-xs"
+                                  />
+                                </td>
+                                <td className="py-2 px-3 text-right font-black font-mono text-stone-900 dark:text-white">
+                                  {(countVal * denom).toLocaleString('en-IN')}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          <tr className="hover:bg-[#f6f0e4]/60 dark:hover:bg-[#2c1c12]/60 transition">
+                            <td className="py-2 px-3 text-left">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-950/60 text-sky-900 dark:text-sky-300 font-mono font-black text-xs border border-sky-300/50 dark:border-sky-800/50">
+                                SB Acc
+                              </span>
+                            </td>
+                            <td className="py-2 px-2 text-center">
+                              <input
+                                type="number"
+                                min="0"
+                                value={form.sbAcc === 0 ? '' : form.sbAcc}
+                                placeholder="0"
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  handleUpdateStaffField(sKey, 'sbAcc', v === '' ? 0 : (parseFloat(v) || 0));
+                                }}
+                                className="w-22 px-2 py-1 text-center font-bold text-stone-900 dark:text-white bg-white dark:bg-[#2c1c12] border border-stone-300 dark:border-[#442a1b] rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition shadow-inner font-mono text-xs"
+                              />
+                            </td>
+                            <td className="py-2 px-3 text-right font-black font-mono text-stone-900 dark:text-white">
+                              {form.sbAcc.toLocaleString('en-IN')}
+                            </td>
+                          </tr>
+                          <tr className="hover:bg-[#f6f0e4]/60 dark:hover:bg-[#2c1c12]/60 transition">
+                            <td className="py-2 px-3 text-left">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-950/60 text-blue-900 dark:text-blue-300 font-mono font-black text-xs border border-blue-300/50 dark:border-blue-800/50">
+                                CA Acc
+                              </span>
+                            </td>
+                            <td className="py-2 px-2 text-center">
+                              <input
+                                type="number"
+                                min="0"
+                                value={form.caAcc === 0 ? '' : form.caAcc}
+                                placeholder="0"
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  handleUpdateStaffField(sKey, 'caAcc', v === '' ? 0 : (parseFloat(v) || 0));
+                                }}
+                                className="w-22 px-2 py-1 text-center font-bold text-stone-900 dark:text-white bg-white dark:bg-[#2c1c12] border border-stone-300 dark:border-[#442a1b] rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition shadow-inner font-mono text-xs"
+                              />
+                            </td>
+                            <td className="py-2 px-3 text-right font-black font-mono text-stone-900 dark:text-white">
+                              {form.caAcc.toLocaleString('en-IN')}
+                            </td>
+                          </tr>
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t-2 border-amber-600/70 bg-gradient-to-r from-amber-500/10 via-amber-500/20 to-amber-500/10 dark:from-amber-950/40 dark:via-amber-900/30 dark:to-amber-950/40 font-black text-xs text-stone-950 dark:text-white">
+                            <td colSpan={2} className="py-2.5 px-3 text-center tracking-wider text-amber-950 dark:text-amber-300 font-bold uppercase">
+                              TOTAL
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-black font-mono text-sm text-stone-950 dark:text-amber-300">
+                              ₹{staffTotal.toLocaleString('en-IN')}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Handover Summary & Modal Footer */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-[#ded3be] dark:border-[#382316]">
+              <div className="text-xs font-bold text-stone-700 dark:text-stone-300">
+                {modalStaffTab === 'ALL' ? (
+                  <>
+                    Combined Staff Handover Total:{' '}
+                    <strong className="text-emerald-700 dark:text-emerald-400 text-sm font-black font-mono">
+                      ₹{grandCombinedTotal.toLocaleString('en-IN')}
+                    </strong>
+                  </>
+                ) : (
+                  <>
+                    {activeStaffList.find((s: any) => s.name.toUpperCase().trim() === modalStaffTab)?.name || modalStaffTab} Handover Total:{' '}
+                    <strong className="text-emerald-700 dark:text-emerald-400 text-sm font-black font-mono">
+                      ₹{(calcStaffTotal(staffDenomForms[modalStaffTab])).toLocaleString('en-IN')}
+                    </strong>
+                  </>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsStaffDenomModalOpen(false)}
+                  className="px-4 py-2 border border-[#ded3be] dark:border-[#442a1b] rounded-xl text-xs font-bold text-stone-700 dark:text-stone-300 hover:bg-[#faf6ee] dark:hover:bg-[#2c1c12] transition cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveStaffDenominations}
+                  disabled={saveDenomMutation.isPending}
+                  className="px-4 py-2 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-stone-950 rounded-xl text-xs font-black shadow-md shadow-amber-900/20 transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{saveDenomMutation.isPending ? 'Saving...' : isCollectionStaff ? 'Save My Handover' : 'Save Staff Handover'}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { ReportService } from '../services/reportService';
+import { ReportService, calculatePaymentBreakdown } from '../services/reportService';
 import { Loan } from '../models/Loan';
 import { Payment } from '../models/Payment';
 import { Expense } from '../models/Expense';
@@ -10,6 +10,7 @@ import { Installment } from '../models/Installment';
 import { authenticate } from '../middleware/auth';
 import { enforceBranchScope, requireRole } from '../middleware/roles';
 import { getRouteDateForWeekday } from './collectionRoutes';
+import { getPendingOverdueRegister } from '../services/pendingService';
 
 const router = Router();
 
@@ -33,20 +34,36 @@ const resolveBranchId = (req: Request, branchIdQuery?: any) => {
 router.get('/daily', async (req: Request, res: Response) => {
   try {
     const branchId = resolveBranchId(req, req.query.branchId);
-    const dateStr = req.query.date as string;
-    const targetDate = dateStr ? new Date(dateStr) : new Date();
+    const { startDate, endDate, date } = req.query as { startDate?: string; endDate?: string; date?: string };
 
-    const startOfDay = new Date(targetDate);
+    let startRange: Date;
+    let endRange: Date;
+
+    if (startDate && endDate) {
+      startRange = new Date(startDate);
+      endRange = new Date(endDate);
+    } else {
+      const target = date ? new Date(date) : new Date();
+      startRange = target;
+      endRange = target;
+    }
+
+    const startOfDay = new Date(startRange);
     startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
+    const endOfDay = new Date(endRange);
     endOfDay.setHours(23, 59, 59, 999);
 
     const baseQuery: any = {};
     if (branchId) baseQuery.branchId = branchId;
 
-    // Parallelize fetch of payments, disbursements, expenses, and route groups
+    // Identify all weekday names covered in the query range
     const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
-    const weekdayStr = dayNames[targetDate.getDay()];
+    const coveredWeekdays = new Set<string>();
+    const iter = new Date(startOfDay);
+    while (iter.getTime() <= endOfDay.getTime()) {
+      coveredWeekdays.add(dayNames[iter.getDay()]);
+      iter.setDate(iter.getDate() + 1);
+    }
 
     const [payments, disbursements, expenses, routeGroups] = await Promise.all([
       Payment.find({
@@ -73,81 +90,141 @@ router.get('/daily', async (req: Request, res: Response) => {
       }).populate('branchId', 'name'),
       Group.find({
         ...baseQuery,
-        collectionDay: weekdayStr,
+        collectionDay: { $in: Array.from(coveredWeekdays) },
         status: { $ne: 'CLOSED' }
-      }).select('_id').lean()
+      }).select('_id collectionDay groupCode name staffName').lean()
     ]);
 
     const totalCollected = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalCash = payments.filter(p => p.paymentMethod === 'CASH').reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalDigital = totalCollected - totalCash;
     const totalDisbursed = disbursements.reduce((sum, d) => sum + (d.principal || 0), 0);
+    const totalInterestGiven = disbursements.reduce((sum, d) => sum + (d.interestAmount || 0), 0);
+    const totalDocCharges = disbursements.reduce((sum, d) => sum + (d.docCharges || 0), 0);
     const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
-    // Calculate daily route expected due and shortfall for targetDate in a single batch query
-    const routeGroupIds = routeGroups.map(g => g._id);
-    const activeRouteLoans = await Loan.find({
-      groupId: { $in: routeGroupIds },
-      status: { $in: ['ACTIVE', 'OVERDUE'] }
-    }).select('_id').lean();
-    const activeRouteLoanIds = activeRouteLoans.map(l => l._id);
+    const { collectedPrincipal, collectedInterest, collectedSavings } = await calculatePaymentBreakdown(payments);
 
-    const targetInstallments = await Installment.find({
-      loanId: { $in: activeRouteLoanIds },
-      $or: [
-        { dueDate: { $gte: startOfDay, $lte: endOfDay } },
-        { paidDate: { $gte: startOfDay, $lte: endOfDay } }
-      ]
-    }).lean();
-
-    const instMap = new Map<string, any[]>();
-    for (const inst of targetInstallments) {
-      const k = String(inst.loanId);
-      let arr = instMap.get(k);
-      if (!arr) {
-        arr = [];
-        instMap.set(k, arr);
-      }
-      arr.push(inst);
-    }
-
-    const dayStartTs = startOfDay.getTime();
-    const dayEndTs = endOfDay.getTime();
+    // Calculate daily route expected due and shortfall strictly using Collections logic
+    const isDateRange = !!(startDate && endDate && String(startDate) !== String(endDate));
     let expectedDue = 0;
+    let shortfall = 0;
+    let routeCollected = 0;
 
-    for (const lId of activeRouteLoanIds) {
-      const loanInsts = instMap.get(String(lId)) || [];
-      let targetInst = loanInsts.find(i => {
-        if (!i.dueDate) return false;
-        const t = new Date(i.dueDate).getTime();
-        return t >= dayStartTs && t <= dayEndTs;
+    if (isDateRange) {
+      const rangeInstallments = await Installment.find({
+        ...baseQuery,
+        dueDate: { $gte: startOfDay, $lte: endOfDay }
+      }).lean();
+
+      expectedDue = rangeInstallments.reduce((sum, inst) => sum + (inst.expectedAmount || 0), 0);
+      shortfall = rangeInstallments.reduce((sum, inst) => sum + Math.max(0, inst.balanceAmount || 0), 0);
+      routeCollected = totalCollected;
+    } else {
+      const targetWeekday = dayNames[startOfDay.getDay()];
+      const singleRouteGroups = await Group.find({
+        ...baseQuery,
+        collectionDay: targetWeekday,
+        status: { $ne: 'CLOSED' }
+      }).select('_id').lean();
+      const singleRouteGroupIds = singleRouteGroups.map(g => g._id);
+
+      const singleRouteLoans = await Loan.find({
+        ...baseQuery,
+        groupId: { $in: singleRouteGroupIds },
+        $or: [
+          { status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] } },
+          { _id: { $in: await Payment.distinct('loanId', { ...baseQuery, groupId: { $in: singleRouteGroupIds }, paymentDate: { $gte: startOfDay, $lte: endOfDay }, isReversed: false }) } }
+        ]
+      }).lean();
+
+      const singleLoanIds = singleRouteLoans.map(l => l._id);
+      const singleInsts = await Installment.find({ loanId: { $in: singleLoanIds } }).lean();
+
+      const instByLoan = new Map<string, any[]>();
+      singleInsts.forEach(i => {
+        const k = String(i.loanId);
+        if (!instByLoan.has(k)) instByLoan.set(k, []);
+        instByLoan.get(k)!.push(i);
       });
-      if (!targetInst) {
-        targetInst = loanInsts.find(i => {
-          if (!i.paidDate) return false;
-          const t = new Date(i.paidDate).getTime();
-          return t >= dayStartTs && t <= dayEndTs;
+
+      const routePaymentsList = payments.filter(p => {
+        const gid = String((p.groupId as any)?._id || p.groupId);
+        return singleRouteGroupIds.some(id => String(id) === gid);
+      });
+      routeCollected = routePaymentsList.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+      const payByLoan = new Map<string, any[]>();
+      routePaymentsList.forEach(p => {
+        const k = String((p.loanId as any)?._id || p.loanId);
+        if (!payByLoan.has(k)) payByLoan.set(k, []);
+        payByLoan.get(k)!.push(p);
+      });
+
+      for (const l of singleRouteLoans) {
+        const lPays = payByLoan.get(String(l._id)) || [];
+        const paidOnDate = lPays.reduce((sum, p) => sum + (p.amount || 0), 0);
+        const lInsts = instByLoan.get(String(l._id)) || [];
+
+        const lDisb = l.disbursedDate ? new Date(l.disbursedDate).getTime() : 0;
+        if (lDisb > endOfDay.getTime() && paidOnDate <= 0) continue;
+
+        const outTotal = l.outstandingTotal || 0;
+        const scheduledThisWeek = lInsts.find(i => {
+          const d = new Date(i.dueDate).getTime();
+          return d >= startOfDay.getTime() && d <= endOfDay.getTime();
         });
-      }
-      if (targetInst) {
-        expectedDue += targetInst.expectedAmount;
+        const regularWeekly = scheduledThisWeek?.expectedAmount || lInsts.find(i => i.balanceAmount > 0)?.expectedAmount || lInsts[0]?.expectedAmount || 0;
+
+        const isClosed = (l.status === 'CLOSED' || l.status === 'SETTLED' || outTotal <= 0);
+        if (isClosed) {
+          if (paidOnDate > 0) expectedDue += paidOnDate;
+        } else {
+          expectedDue += (regularWeekly || paidOnDate);
+        }
+
+        const unpaidInsts = lInsts.filter(i => i.status !== 'PAID' && i.balanceAmount > 0);
+        let remaining = 0;
+        if (paidOnDate > 0) {
+          const duesRem = unpaidInsts.filter(i => new Date(i.dueDate).getTime() <= endOfDay.getTime());
+          if (duesRem.length === 0 || paidOnDate >= regularWeekly || isClosed) {
+            remaining = 0;
+          } else {
+            remaining = Math.max(0, regularWeekly - paidOnDate);
+          }
+        } else if (isClosed) {
+          remaining = 0;
+        } else {
+          remaining = regularWeekly;
+        }
+        shortfall += remaining;
       }
     }
-    const shortfall = Math.max(0, expectedDue - totalCollected);
 
     res.json({
       success: true,
-      date: targetDate.toISOString().split('T')[0],
+      date: startDate && endDate ? `${startDate} to ${endDate}` : (date || startOfDay.toISOString().split('T')[0]),
+      isDateRange: !!(startDate && endDate),
+      startDate: startOfDay.toISOString().split('T')[0],
+      endDate: endOfDay.toISOString().split('T')[0],
       summary: {
-        totalCollected,
+        expectedDue,
+        collectedAmount: totalCollected, // Repayments collected on date
+        routeCollected,
+        shortfall,
+        totalLoanGiven: totalDisbursed,
+        disbursementCount: disbursements.length,
+        interestGiven: totalInterestGiven,
+        collectedPrincipal,
+        collectedInterest,
+        collectedSavings,
+        docCharges: totalDocCharges,
+        totalCollected: totalCollected + totalDocCharges, // Total received = repayments + upfront doc charges
+        totalDisbursed,
         totalCash,
         totalDigital,
-        expectedDue,
-        shortfall,
-        totalDisbursed,
-        disbursementCount: disbursements.length,
         totalExpenses,
-        netCashflow: totalCollected - totalDisbursed - totalExpenses
+        netCashflow: (totalCollected + totalDocCharges) - totalDisbursed - totalExpenses
       },
       payments,
       disbursements,
@@ -163,10 +240,15 @@ router.get('/daily/export', async (req: Request, res: Response) => {
     const branchId = resolveBranchId(req, req.query.branchId);
     const buffer = await ReportService.generateDailyReport({
       branchId,
-      date: req.query.date as string
+      date: req.query.date as string,
+      startDate: req.query.startDate as string,
+      endDate: req.query.endDate as string
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=daily_report_${Date.now()}.xlsx`);
+    const filename = req.query.startDate && req.query.endDate
+      ? `report_${req.query.startDate}_to_${req.query.endDate}.xlsx`
+      : `daily_report_${req.query.date || Date.now()}.xlsx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
@@ -182,7 +264,7 @@ router.get('/weekly', async (req: Request, res: Response) => {
     const baseQuery: any = {};
     if (branchId) baseQuery.branchId = branchId;
 
-    const days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+    const days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
     const dateRanges = days.map(d => ({ day: d, ...getRouteDateForWeekday(d) }));
     const minStartOfDay = new Date(Math.min(...dateRanges.map(r => r.startOfDay.getTime())));
     const maxEndOfDay = new Date(Math.max(...dateRanges.map(r => r.endOfDay.getTime())));
@@ -191,10 +273,14 @@ router.get('/weekly', async (req: Request, res: Response) => {
     const allGroups = await Group.find({ ...baseQuery, collectionDay: { $in: days } }).sort({ groupCode: 1 }).lean();
     const allGroupIds = allGroups.map(g => g._id);
 
-    // 2. Fetch ALL active/overdue loans for these groups
+    // 2. Fetch ALL active/overdue loans for these groups disbursed on or before this week
     const allLoans = await Loan.find({
       groupId: { $in: allGroupIds },
-      status: { $in: ['ACTIVE', 'OVERDUE'] }
+      status: { $in: ['ACTIVE', 'OVERDUE'] },
+      $or: [
+        { disbursedDate: { $lte: maxEndOfDay } },
+        { disbursedDate: null }
+      ]
     }).populate('customerId', 'name phone').lean();
     const allLoanIds = allLoans.map(l => l._id);
 
@@ -235,6 +321,7 @@ router.get('/weekly', async (req: Request, res: Response) => {
     const daysBreakdown: any[] = [];
     let weeklyExpected = 0;
     let weeklyCollected = 0;
+    let weeklyShortfall = 0;
     let totalScheduledGroups = 0;
     let totalActiveBorrowers = 0;
     let weeklyDisbursedAmount = 0;
@@ -259,6 +346,7 @@ router.get('/weekly', async (req: Request, res: Response) => {
 
       let dayExp = 0;
       let dayColl = 0;
+      let dayShortfall = 0;
       let dayBorrowers = 0;
       const groupList: any[] = [];
 
@@ -274,30 +362,52 @@ router.get('/weekly', async (req: Request, res: Response) => {
         const grpColl = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
         let grpExp = 0;
+        let grpRemaining = 0;
+
         for (const l of loans) {
           const loanInsts = instsByLoan.get(String(l._id)) || [];
-          let targetInst = loanInsts.find(i => {
-            if (!i.dueDate) return false;
-            const t = new Date(i.dueDate).getTime();
-            return t >= dayStartTs && t <= dayEndTs;
+          const lPays = payments.filter(p => String(p.loanId) === String(l._id));
+          const paidOnDate = lPays.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+          const lDisb = l.disbursedDate ? new Date(l.disbursedDate).getTime() : 0;
+          if (lDisb > dayEndTs && paidOnDate <= 0) {
+            continue;
+          }
+
+          const outTotal = l.outstandingTotal || 0;
+          const scheduledThisWeek = loanInsts.find(i => {
+            const d = new Date(i.dueDate).getTime();
+            return d >= dayStartTs && d <= dayEndTs;
           });
-          if (!targetInst) {
-            targetInst = loanInsts.find(i => {
-              if (!i.paidDate) return false;
-              const t = new Date(i.paidDate).getTime();
-              return t >= dayStartTs && t <= dayEndTs;
-            });
+          const regularWeekly = scheduledThisWeek?.expectedAmount || loanInsts.find(i => i.balanceAmount > 0)?.expectedAmount || loanInsts[0]?.expectedAmount || 0;
+
+          const isClosed = (l.status === 'CLOSED' || l.status === 'SETTLED' || outTotal <= 0);
+          if (isClosed) {
+            if (paidOnDate > 0) grpExp += paidOnDate;
+          } else {
+            grpExp += (regularWeekly || paidOnDate);
           }
-          if (!targetInst) {
-            const pendingInsts = loanInsts.filter(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
-            pendingInsts.sort((a, b) => a.installmentNumber - b.installmentNumber);
-            targetInst = pendingInsts[0];
+
+          const unpaidInsts = loanInsts.filter(i => i.status !== 'PAID' && i.balanceAmount > 0);
+          let remaining = 0;
+          if (paidOnDate > 0) {
+            const duesRem = unpaidInsts.filter(i => new Date(i.dueDate).getTime() <= dayEndTs);
+            if (duesRem.length === 0 || paidOnDate >= regularWeekly || isClosed) {
+              remaining = 0;
+            } else {
+              remaining = Math.max(0, regularWeekly - paidOnDate);
+            }
+          } else if (isClosed) {
+            remaining = 0;
+          } else {
+            remaining = regularWeekly;
           }
-          grpExp += targetInst ? (targetInst.expectedAmount || 0) : 0;
+          grpRemaining += remaining;
         }
 
         dayExp += grpExp;
         dayColl += grpColl;
+        dayShortfall += grpRemaining;
         dayBorrowers += loans.length;
 
         groupList.push({
@@ -309,12 +419,13 @@ router.get('/weekly', async (req: Request, res: Response) => {
           borrowersCount: loans.length,
           expected: grpExp,
           collected: grpColl,
-          shortfall: Math.max(0, grpExp - grpColl)
+          shortfall: grpRemaining
         });
       }
 
       weeklyExpected += dayExp;
       weeklyCollected += dayColl;
+      weeklyShortfall += dayShortfall;
       totalScheduledGroups += groups.length;
       totalActiveBorrowers += dayBorrowers;
 
@@ -324,7 +435,7 @@ router.get('/weekly', async (req: Request, res: Response) => {
         borrowersCount: dayBorrowers,
         expected: dayExp,
         collected: dayColl,
-        shortfall: Math.max(0, dayExp - dayColl),
+        shortfall: dayShortfall,
         efficiency: dayExp > 0 ? Math.round((dayColl / dayExp) * 100) : (dayColl > 0 ? 100 : 0),
         disbursedAmount: dayDisbAmt,
         disbursedCount: dayDisbCount,
@@ -332,17 +443,32 @@ router.get('/weekly', async (req: Request, res: Response) => {
       });
     }
 
+    const weeklyInterestGiven = allDisbursements.reduce((sum, d) => sum + (d.interestAmount || 0), 0);
+    const weeklyDocCharges = allDisbursements.reduce((sum, d) => sum + (d.docCharges || 0), 0);
+    const { collectedPrincipal, collectedInterest, collectedSavings } = await calculatePaymentBreakdown(allPayments);
+
     res.json({
       success: true,
       summary: {
+        expectedDue: weeklyExpected,
+        collectedAmount: weeklyCollected,
         weeklyExpected,
         weeklyCollected,
-        weeklyShortfall: Math.max(0, weeklyExpected - weeklyCollected),
+        weeklyShortfall,
+        shortfall: weeklyShortfall,
         overallEfficiency: weeklyExpected > 0 ? Math.round((weeklyCollected / weeklyExpected) * 100) : 100,
         totalScheduledGroups,
         totalActiveBorrowers,
+        totalLoanGiven: weeklyDisbursedAmount,
         weeklyDisbursedAmount,
-        weeklyDisbursedCount
+        weeklyDisbursedCount,
+        disbursementCount: weeklyDisbursedCount,
+        interestGiven: weeklyInterestGiven,
+        collectedPrincipal,
+        collectedInterest,
+        collectedSavings,
+        docCharges: weeklyDocCharges,
+        totalCollected: weeklyCollected + weeklyDocCharges
       },
       days: daysBreakdown
     });
@@ -396,9 +522,12 @@ router.get('/monthly', async (req: Request, res: Response) => {
 
     const totalPrincipalDisbursed = loansDisbursed.reduce((sum, l) => sum + (l.principal || 0), 0);
     const totalDocCharges = loansDisbursed.reduce((sum, l) => sum + (l.docCharges || 0), 0);
+    const totalInterestGiven = loansDisbursed.reduce((sum, l) => sum + (l.interestAmount || 0), 0);
     const totalSavingsCollected = loansDisbursed.reduce((sum, l) => sum + (l.savingsAmount || 0), 0);
     const totalCollected = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
     const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    const { collectedPrincipal, collectedInterest, collectedSavings } = await calculatePaymentBreakdown(payments);
 
     // Calculate monthly collection target from scheduled installments
     const monthlyInstallments = await Installment.find({
@@ -406,6 +535,7 @@ router.get('/monthly', async (req: Request, res: Response) => {
       dueDate: { $gte: startOfMonth, $lte: endOfMonth }
     }).lean();
     const targetToCollect = monthlyInstallments.reduce((sum, inst) => sum + (inst.expectedAmount || 0), 0);
+    const monthlyShortfall = monthlyInstallments.reduce((sum, inst) => sum + Math.max(0, inst.balanceAmount || 0), 0);
     const recoveryPercentage = targetToCollect > 0 ? Math.round((totalCollected / targetToCollect) * 100) : (totalCollected > 0 ? 100 : 0);
 
     const closedLoansCount = await Loan.countDocuments({
@@ -420,11 +550,20 @@ router.get('/monthly', async (req: Request, res: Response) => {
       month,
       monthName: new Date(year, month - 1).toLocaleString('default', { month: 'long' }),
       summary: {
+        expectedDue: targetToCollect,
+        collectedAmount: totalCollected,
+        shortfall: monthlyShortfall,
+        totalLoanGiven: totalPrincipalDisbursed,
         disbursementCount: loansDisbursed.length,
+        interestGiven: totalInterestGiven,
+        collectedPrincipal,
+        collectedInterest,
+        collectedSavings,
+        docCharges: totalDocCharges,
+        totalCollected: totalCollected + totalDocCharges,
         totalPrincipalDisbursed,
         totalDocCharges,
         totalSavingsCollected,
-        totalCollected,
         targetToCollect,
         recoveryPercentage,
         totalExpenses,
@@ -456,93 +595,51 @@ router.get('/monthly/export', async (req: Request, res: Response) => {
 
 // ==========================================
 // 4. PENDING EMI REPORTS (JSON & EXCEL)
+// Canonical source: getPendingOverdueRegister
 // ==========================================
 router.get('/pending-emi', async (req: Request, res: Response) => {
   try {
     const branchId = resolveBranchId(req, req.query.branchId);
     const collectionDay = req.query.collectionDay as string;
+    const search = req.query.search as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
 
-    const baseQuery: any = {};
-    if (branchId) baseQuery.branchId = branchId;
+    const result = await getPendingOverdueRegister({
+      branchId,
+      weekday: collectionDay !== 'ALL' ? collectionDay : undefined,
+      search,
+      startDate,
+      endDate
+    });
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const pendingList = result.followUps.map(f => ({
+      id: f.id,
+      loanNumber: f.loanNumber,
+      customerName: f.customerName,
+      groupName: f.groupName,
+      collectionDay: f.collectionDay,
+      phone: f.customerPhone,
+      nomineePhone: f.nomineePhone || '-',
+      overdueWeeks: f.overdueWeeks,
+      actualPending: f.actualPending,
+      customerKnown: f.customerKnown || f.actualPending,
+      collector: f.staffName || 'Staff',
+      remarks: f.remarks || 'Pending field follow-up',
+      status: f.status
+    }));
 
-    // Auto-mark any installment whose due date has passed (< today) and has positive balance as OVERDUE
-    await Installment.updateMany(
-      {
-        dueDate: { $lt: todayStart },
-        balanceAmount: { $gt: 0 },
-        status: { $ne: 'OVERDUE' }
-      },
-      { $set: { status: 'OVERDUE' } }
-    );
-
-    // Strictly dynamic: find loans whose status is 'OVERDUE'
-    const overdueLoans = await Loan.find({
-      ...baseQuery,
-      status: 'OVERDUE'
-    })
-      .populate('customerId', 'name phone nomineePhone area')
-      .populate('groupId', 'name collectionDay staffName groupCode')
-      .lean();
-
-    const pendingList: any[] = [];
-
-    for (const l of overdueLoans) {
-      const custObj = l.customerId as any;
-      const grpObj = l.groupId as any;
-      const cDay = grpObj?.collectionDay || l.collectionDay || 'MONDAY';
-
-      if (collectionDay && collectionDay !== 'ALL' && cDay !== collectionDay) {
-        continue;
-      }
-
-      // Calculate actual overdue from overdue installments
-      const overdueInsts = await Installment.find({
-        loanId: l._id,
-        $or: [
-          { status: 'OVERDUE' },
-          { dueDate: { $lt: todayStart }, balanceAmount: { $gt: 0 } }
-        ]
-      }).lean();
-
-      const actualPending = overdueInsts.reduce((sum, i) => sum + (i.balanceAmount || 0), 0) || l.outstandingTotal;
-      const overdueWeeks = overdueInsts.length || 1;
-
-      // Optional remarks lookup from follow-ups
-      const f = await FollowUp.findOne({
-        $or: [
-          { loanId: l._id },
-          { customerId: l.customerId }
-        ]
-      }).lean();
-
-      pendingList.push({
-        id: l._id,
-        loanNumber: l.loanNumber,
-        customerName: custObj?.name || l.customerName || 'Borrower',
-        groupName: grpObj?.name || l.groupName || '-',
-        collectionDay: cDay,
-        phone: custObj?.phone || l.customerPhone || '-',
-        nomineePhone: custObj?.nomineePhone || l.nomineePhone || '-',
-        overdueWeeks,
-        actualPending,
-        customerKnown: f?.customerKnown || actualPending,
-        collector: l.assignedStaffName || grpObj?.staffName || f?.staffName || 'Staff',
-        remarks: f?.remarks || 'Overdue installment requiring field recovery',
-        status: 'PENDING'
-      });
-    }
-
-    const totalOverdueAmount = pendingList.reduce((sum, p) => sum + (p.actualPending || 0), 0);
-    const highRiskCount = pendingList.filter(p => typeof p.overdueWeeks === 'number' && p.overdueWeeks >= 3).length;
+    const totalOverdueAmount = result.summary.totalActualPending;
+    const highRiskCount = result.followUps.filter(p => typeof p.overdueWeeks === 'number' && p.overdueWeeks >= 3).length;
 
     res.json({
       success: true,
       summary: {
         totalBorrowers: pendingList.length,
         totalOverdueAmount,
+        totalActualPending: result.summary.totalActualPending,
+        totalBalancePending: result.summary.totalBalancePending,
+        totalSavings: result.summary.totalSavings,
         highRiskCount
       },
       pendingList
@@ -557,10 +654,15 @@ router.get('/pending-emi/export', async (req: Request, res: Response) => {
     const branchId = resolveBranchId(req, req.query.branchId);
     const buffer = await ReportService.generatePendingEmiReport({
       branchId,
-      collectionDay: req.query.collectionDay as string
+      collectionDay: req.query.collectionDay as string,
+      startDate: req.query.startDate as string,
+      endDate: req.query.endDate as string
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=pending_emi_report_${Date.now()}.xlsx`);
+    const filename = req.query.startDate && req.query.endDate
+      ? `pending_emi_${req.query.startDate}_to_${req.query.endDate}.xlsx`
+      : `pending_emi_report_${Date.now()}.xlsx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
@@ -573,51 +675,28 @@ router.get('/pending-emi/export', async (req: Request, res: Response) => {
 router.get('/profit-loss', async (req: Request, res: Response) => {
   try {
     const branchId = resolveBranchId(req, req.query.branchId);
-    const baseQuery: any = {};
-    if (branchId) baseQuery.branchId = branchId;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
 
-    const loans = await Loan.find(baseQuery);
-    const payments = await Payment.find(baseQuery);
-    const expenses = await Expense.find({ ...baseQuery, status: 'APPROVED' });
-
-    const totalDocCharges = loans.reduce((sum, l) => sum + (l.docCharges || 0), 0);
-    const totalInterestEarned = payments.reduce((sum, p) => sum + Math.round((p.amount || 0) * 0.16), 0);
-    const totalOperatingRevenue = totalDocCharges + totalInterestEarned;
-
-    const fuelExpenses = expenses.filter(e => e.category.toLowerCase().includes('fuel') || e.travelKM > 0)
-      .reduce((sum, e) => sum + (e.amount || 0), 0);
-    const rentExpenses = expenses.filter(e => e.category.toLowerCase().includes('rent'))
-      .reduce((sum, e) => sum + (e.amount || 0), 0);
-    const salaryExpenses = expenses.filter(e => e.category.toLowerCase().includes('salary') || e.category.toLowerCase().includes('incentive'))
-      .reduce((sum, e) => sum + (e.amount || 0), 0);
-    const generalExpenses = expenses.filter(e => 
-      !e.category.toLowerCase().includes('fuel') && 
-      !e.category.toLowerCase().includes('rent') && 
-      !e.category.toLowerCase().includes('salary') && 
-      !e.category.toLowerCase().includes('incentive') &&
-      e.travelKM <= 0
-    ).reduce((sum, e) => sum + (e.amount || 0), 0);
-
-    const totalOperatingExpenses = fuelExpenses + rentExpenses + salaryExpenses + generalExpenses;
-    const netOperatingProfit = totalOperatingRevenue - totalOperatingExpenses;
-    const profitMargin = totalOperatingRevenue > 0 ? Math.round((netOperatingProfit / totalOperatingRevenue) * 100) : 0;
+    const data = await ReportService.compileProfitLossData({
+      branchId,
+      startDate,
+      endDate
+    });
 
     res.json({
       success: true,
-      revenue: {
-        docCharges: totalDocCharges,
-        interestEarned: totalInterestEarned,
-        totalRevenue: totalOperatingRevenue
-      },
-      expenses: {
-        fuel: fuelExpenses,
-        rent: rentExpenses,
-        salaries: salaryExpenses,
-        general: generalExpenses,
-        totalExpenses: totalOperatingExpenses
-      },
-      netProfit: netOperatingProfit,
-      profitMargin
+      branchName: data.branchName,
+      periodLabel: data.periodLabel,
+      maxWeeks: data.maxWeeks,
+      revenue: data.summary.revenue,
+      expenses: data.summary.expenses,
+      netProfit: data.summary.netProfit,
+      profitMargin: data.summary.profitMargin,
+      summary: data.summary,
+      totals: data.totals,
+      pnlRows: data.pnlRows,
+      expenseRows: data.expenseRows
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
@@ -627,9 +706,35 @@ router.get('/profit-loss', async (req: Request, res: Response) => {
 router.get('/profit-loss/export', async (req: Request, res: Response) => {
   try {
     const branchId = resolveBranchId(req, req.query.branchId);
-    const buffer = await ReportService.generateProfitLossReport({ branchId });
+    const buffer = await ReportService.generateProfitLossReport({
+      branchId,
+      startDate: req.query.startDate as string,
+      endDate: req.query.endDate as string
+    });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=profit_loss_${Date.now()}.xlsx`);
+    const filename = req.query.startDate && req.query.endDate
+      ? `profit_loss_${req.query.startDate}_to_${req.query.endDate}.xlsx`
+      : `profit_loss_${Date.now()}.xlsx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/expenses/export', async (req: Request, res: Response) => {
+  try {
+    const branchId = resolveBranchId(req, req.query.branchId);
+    const buffer = await ReportService.generateExpensesReport({
+      branchId,
+      startDate: req.query.startDate as string,
+      endDate: req.query.endDate as string
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const filename = req.query.startDate && req.query.endDate
+      ? `expenses_${req.query.startDate}_to_${req.query.endDate}.xlsx`
+      : `expenses_${Date.now()}.xlsx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });

@@ -6,7 +6,7 @@ import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 import { useAuth } from '../context/AuthContext';
 
-const WEEKDAYS = ['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+const WEEKDAYS = ['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 export const Groups: React.FC = () => {
   const { user, isStaff, isManager, isAdmin } = useAuth();
@@ -414,6 +414,9 @@ export const Groups: React.FC = () => {
                     <option value="TUESDAY">TUESDAY</option>
                     <option value="WEDNESDAY">WEDNESDAY</option>
                     <option value="THURSDAY">THURSDAY</option>
+                    <option value="FRIDAY">FRIDAY</option>
+                    <option value="SATURDAY">SATURDAY</option>
+                    <option value="SUNDAY">SUNDAY</option>
                   </select>
                 </div>
                 <div>
@@ -560,6 +563,7 @@ export const Groups: React.FC = () => {
                     <option value="THURSDAY">THURSDAY</option>
                     <option value="FRIDAY">FRIDAY</option>
                     <option value="SATURDAY">SATURDAY</option>
+                    <option value="SUNDAY">SUNDAY</option>
                   </select>
                 </div>
 

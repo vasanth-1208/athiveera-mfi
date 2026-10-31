@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { Customer } from '../models/Customer';
 import { Branch } from '../models/Branch';
 import { Loan } from '../models/Loan';
@@ -21,11 +22,11 @@ router.get('/', async (req: Request, res: Response) => {
 
     if (req.user?.role !== 'MAIN_ADMIN') {
       query.branchId = req.user?.branchId;
-    } else if (branchId && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
+    } else if (branchId && branchId !== 'undefined' && branchId !== 'null' && branchId !== '' && branchId !== 'ALL') {
       query.branchId = branchId;
     }
 
-    if (area) {
+    if (area && area !== 'ALL' && String(area).trim() !== '') {
       query.area = area;
     }
 
@@ -66,7 +67,8 @@ router.get('/', async (req: Request, res: Response) => {
       .populate('activeGroupId', 'name collectionDay groupCode')
       .sort(sortObj)
       .skip((p - 1) * l)
-      .limit(l);
+      .limit(l)
+      .lean();
 
     const customerIds = customers.map(c => c._id);
     const loans = await Loan.find({ customerId: { $in: customerIds } })
@@ -82,7 +84,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
 
     const enhancedCustomers = customers.map(c => {
-      const doc: any = c.toObject();
+      const doc: any = c.toObject ? c.toObject() : { ...c };
       doc.loan = loanMap.get(String(c._id)) || null;
       return doc;
     });
@@ -102,6 +104,116 @@ router.get('/', async (req: Request, res: Response) => {
         limit: l,
         total,
         pages: Math.ceil(total / l)
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/customers/check-duplicate - Real-time duplicate entry detector for KYC and contact numbers
+router.get('/check-duplicate', async (req: Request, res: Response) => {
+  try {
+    const {
+      aadharNumber,
+      voterIdNumber,
+      smartCardNumber,
+      panNumber,
+      phone,
+      excludeId
+    } = req.query;
+
+    const conditions: any[] = [];
+    const fieldMap: Record<string, string> = {};
+
+    if (aadharNumber && String(aadharNumber).trim().length >= 4) {
+      const cleanAadhar = String(aadharNumber).trim();
+      conditions.push({ aadharNumber: cleanAadhar });
+      fieldMap['aadharNumber'] = cleanAadhar;
+    }
+
+    if (voterIdNumber && String(voterIdNumber).trim().length >= 3) {
+      const cleanVoter = String(voterIdNumber).trim().toUpperCase();
+      conditions.push({ voterIdNumber: cleanVoter });
+      fieldMap['voterIdNumber'] = cleanVoter;
+    }
+
+    if (smartCardNumber && String(smartCardNumber).trim().length >= 3) {
+      const cleanSmart = String(smartCardNumber).trim().toUpperCase();
+      conditions.push({ smartCardNumber: cleanSmart });
+      fieldMap['smartCardNumber'] = cleanSmart;
+    }
+
+    if (panNumber && String(panNumber).trim().length >= 5) {
+      const cleanPan = String(panNumber).trim().toUpperCase();
+      conditions.push({ panNumber: cleanPan });
+      fieldMap['panNumber'] = cleanPan;
+    }
+
+    if (phone && String(phone).trim().length >= 8) {
+      const cleanPhone = String(phone).trim();
+      conditions.push({ phone: cleanPhone });
+      fieldMap['phone'] = cleanPhone;
+    }
+
+    if (conditions.length === 0) {
+      res.json({ success: true, exists: false });
+      return;
+    }
+
+    const query: any = { $or: conditions };
+    if (excludeId && mongoose.Types.ObjectId.isValid(String(excludeId))) {
+      query._id = { $ne: excludeId };
+    }
+
+    const existingCustomer = await Customer.findOne(query).populate('branchId', 'name code').lean();
+
+    if (!existingCustomer) {
+      res.json({ success: true, exists: false });
+      return;
+    }
+
+    // Determine which field matched
+    let matchedField = 'KYC Number';
+    let matchedValue = '';
+
+    if (fieldMap['aadharNumber'] && existingCustomer.aadharNumber === fieldMap['aadharNumber']) {
+      matchedField = 'Aadhaar Card';
+      matchedValue = existingCustomer.aadharNumber;
+    } else if (fieldMap['voterIdNumber'] && existingCustomer.voterIdNumber?.toUpperCase() === fieldMap['voterIdNumber']) {
+      matchedField = 'Voter ID';
+      matchedValue = existingCustomer.voterIdNumber;
+    } else if (fieldMap['smartCardNumber'] && existingCustomer.smartCardNumber?.toUpperCase() === fieldMap['smartCardNumber']) {
+      matchedField = 'Smart Card (Ration Card)';
+      matchedValue = existingCustomer.smartCardNumber;
+    } else if (fieldMap['panNumber'] && existingCustomer.panNumber?.toUpperCase() === fieldMap['panNumber']) {
+      matchedField = 'PAN Card';
+      matchedValue = existingCustomer.panNumber;
+    } else if (fieldMap['phone'] && existingCustomer.phone === fieldMap['phone']) {
+      matchedField = 'Phone Number';
+      matchedValue = existingCustomer.phone;
+    }
+
+    res.json({
+      success: true,
+      exists: true,
+      matchedField,
+      matchedValue,
+      customer: {
+        _id: existingCustomer._id,
+        customerId: existingCustomer.customerId,
+        name: existingCustomer.name,
+        phone: existingCustomer.phone,
+        area: existingCustomer.area,
+        branchName: (existingCustomer.branchId as any)?.name || '',
+        aadharNumber: existingCustomer.aadharNumber,
+        voterIdNumber: existingCustomer.voterIdNumber,
+        smartCardNumber: existingCustomer.smartCardNumber,
+        panNumber: existingCustomer.panNumber,
+        spouseName: existingCustomer.spouseName,
+        nomineeName: existingCustomer.nomineeName,
+        nomineePhone: existingCustomer.nomineePhone,
+        nomineeRelationship: existingCustomer.nomineeRelationship
       }
     });
   } catch (error: any) {
@@ -159,10 +271,62 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.post('/', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
   try {
-    const { name, phone, nomineePhone, address, area, activeGroupId, notes } = req.body;
+    const {
+      name,
+      phone,
+      nomineePhone,
+      address,
+      area,
+      activeGroupId,
+      notes,
+      smartCardNumber,
+      aadharNumber,
+      voterIdNumber,
+      panNumber,
+      spouseName,
+      nomineeName,
+      nomineeRelationship
+    } = req.body;
+
     if (!name) {
       res.status(400).json({ success: false, message: 'Customer name is required' });
       return;
+    }
+
+    // Duplicate check on KYC & Phone
+    const dupChecks: any[] = [];
+    if (aadharNumber && String(aadharNumber).trim().length >= 4) {
+      dupChecks.push({ aadharNumber: String(aadharNumber).trim() });
+    }
+    if (voterIdNumber && String(voterIdNumber).trim().length >= 3) {
+      dupChecks.push({ voterIdNumber: String(voterIdNumber).trim().toUpperCase() });
+    }
+    if (smartCardNumber && String(smartCardNumber).trim().length >= 3) {
+      dupChecks.push({ smartCardNumber: String(smartCardNumber).trim().toUpperCase() });
+    }
+    if (panNumber && String(panNumber).trim().length >= 5) {
+      dupChecks.push({ panNumber: String(panNumber).trim().toUpperCase() });
+    }
+    if (phone && String(phone).trim().length >= 8) {
+      dupChecks.push({ phone: String(phone).trim() });
+    }
+
+    if (dupChecks.length > 0) {
+      const existing = await Customer.findOne({ $or: dupChecks }).populate('branchId', 'name').lean();
+      if (existing) {
+        let fieldName = 'KYC details';
+        if (aadharNumber && existing.aadharNumber === String(aadharNumber).trim()) fieldName = 'Aadhaar Number';
+        else if (voterIdNumber && existing.voterIdNumber?.toUpperCase() === String(voterIdNumber).trim().toUpperCase()) fieldName = 'Voter ID';
+        else if (smartCardNumber && existing.smartCardNumber?.toUpperCase() === String(smartCardNumber).trim().toUpperCase()) fieldName = 'Smart Card';
+        else if (panNumber && existing.panNumber?.toUpperCase() === String(panNumber).trim().toUpperCase()) fieldName = 'PAN Number';
+        else if (phone && existing.phone === String(phone).trim()) fieldName = 'Phone Number';
+
+        res.status(400).json({
+          success: false,
+          message: `Customer already exists with this ${fieldName}: ${existing.name} (${existing.customerId}) in ${(existing.branchId as any)?.name || existing.area || 'system'}`
+        });
+        return;
+      }
     }
 
     const branchId = req.user?.role === 'MAIN_ADMIN' ? (req.body.branchId || req.user?.branchId) : req.user?.branchId;
@@ -176,14 +340,22 @@ router.post('/', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Reques
 
     const customer = await Customer.create({
       customerId,
-      name,
-      phone: phone || '',
-      nomineePhone: nomineePhone || '',
-      address: address || '',
-      area: area || '',
+      name: name.trim(),
+      phone: phone ? String(phone).trim() : '',
+      nomineePhone: nomineePhone ? String(nomineePhone).trim() : '',
+      address: address ? String(address).trim() : '',
+      area: area ? String(area).trim() : '',
       branchId,
       activeGroupId: activeGroupId || null,
-      notes: notes || ''
+      notes: notes || '',
+      smartCardNumber: smartCardNumber ? String(smartCardNumber).trim().toUpperCase() : '',
+      aadharNumber: aadharNumber ? String(aadharNumber).trim() : '',
+      voterIdNumber: voterIdNumber ? String(voterIdNumber).trim().toUpperCase() : '',
+      panNumber: panNumber ? String(panNumber).trim().toUpperCase() : '',
+      spouseName: spouseName ? String(spouseName).trim() : '',
+      nomineeName: nomineeName ? String(nomineeName).trim() : '',
+      nomineeRelationship: nomineeRelationship ? String(nomineeRelationship).trim() : '',
+      status: 'ACTIVE'
     });
 
     res.status(201).json({ success: true, customer });
@@ -222,6 +394,42 @@ router.put('/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Requ
       status, 
       notes 
     } = req.body;
+
+    // Duplicate check on KYC & Phone excluding current customer
+    const dupChecks: any[] = [];
+    if (aadharNumber && String(aadharNumber).trim().length >= 4) {
+      dupChecks.push({ aadharNumber: String(aadharNumber).trim() });
+    }
+    if (voterIdNumber && String(voterIdNumber).trim().length >= 3) {
+      dupChecks.push({ voterIdNumber: String(voterIdNumber).trim().toUpperCase() });
+    }
+    if (smartCardNumber && String(smartCardNumber).trim().length >= 3) {
+      dupChecks.push({ smartCardNumber: String(smartCardNumber).trim().toUpperCase() });
+    }
+    if (panNumber && String(panNumber).trim().length >= 5) {
+      dupChecks.push({ panNumber: String(panNumber).trim().toUpperCase() });
+    }
+    if (phone && String(phone).trim().length >= 8) {
+      dupChecks.push({ phone: String(phone).trim() });
+    }
+
+    if (dupChecks.length > 0) {
+      const existing = await Customer.findOne({ _id: { $ne: req.params.id }, $or: dupChecks }).populate('branchId', 'name').lean();
+      if (existing) {
+        let fieldName = 'KYC details';
+        if (aadharNumber && existing.aadharNumber === String(aadharNumber).trim()) fieldName = 'Aadhaar Number';
+        else if (voterIdNumber && existing.voterIdNumber?.toUpperCase() === String(voterIdNumber).trim().toUpperCase()) fieldName = 'Voter ID';
+        else if (smartCardNumber && existing.smartCardNumber?.toUpperCase() === String(smartCardNumber).trim().toUpperCase()) fieldName = 'Smart Card';
+        else if (panNumber && existing.panNumber?.toUpperCase() === String(panNumber).trim().toUpperCase()) fieldName = 'PAN Number';
+        else if (phone && existing.phone === String(phone).trim()) fieldName = 'Phone Number';
+
+        res.status(400).json({
+          success: false,
+          message: `Cannot update: ${fieldName} already belongs to another customer: ${existing.name} (${existing.customerId}) in ${(existing.branchId as any)?.name || existing.area || 'system'}`
+        });
+        return;
+      }
+    }
 
     if (name) customer.name = name;
     if (phone !== undefined) customer.phone = phone;

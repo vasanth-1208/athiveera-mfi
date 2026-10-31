@@ -61,78 +61,130 @@ function buildRouteMemberRows(
 ) {
   let groupExpected = 0;
   let groupOutstanding = 0;
+  let groupRemaining = 0;
   const memberRows: any[] = [];
 
   for (const l of loans) {
-    groupOutstanding += (l.outstandingTotal || 0);
-
     const loanPayments = routePayments.filter(p => String(p.loanId) === String(l._id));
     const paidOnRouteDate = loanPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-    const loanInsts = installmentsByLoan.get(String(l._id)) || [];
+    // Rule: If viewing date is strictly before the loan disbursement date and no payments occurred on this date, this loan did not exist yet!
+    const loanDisbursedTime = l.disbursedDate ? new Date(l.disbursedDate).getTime() : 0;
+    if (loanDisbursedTime > endOfDay.getTime() && paidOnRouteDate <= 0) {
+      continue;
+    }
 
-    let targetInst = loanInsts.find(i => {
+    const outTotal = l.outstandingTotal || 0;
+    groupOutstanding += outTotal;
+
+    const loanInsts = (installmentsByLoan.get(String(l._id)) || []).slice().sort((a, b) => a.installmentNumber - b.installmentNumber);
+
+    // 1. Regular contractual weekly installment amount for this route week
+    const scheduledThisWeek = loanInsts.find(i => {
       const d = new Date(i.dueDate).getTime();
       return d >= startOfDay.getTime() && d <= endOfDay.getTime();
     });
+    const regularWeeklyAmount = scheduledThisWeek?.expectedAmount || loanInsts.find(i => i.balanceAmount > 0)?.expectedAmount || loanInsts[0]?.expectedAmount || 0;
 
-    if (!targetInst) {
-      targetInst = loanInsts.find(i => {
-        if (!i.paidDate) return false;
-        const d = new Date(i.paidDate).getTime();
-        return d >= startOfDay.getTime() && d <= endOfDay.getTime();
-      });
-    }
+    const isBadDebt = l.status === 'BAD_DEBT' || loanInsts.some(i => i.status === 'BAD_DEBT');
+    const isLoanClosedOrSettled = (l.status === 'CLOSED' || l.status === 'SETTLED' || outTotal <= 0);
 
-    let instToDisplay = targetInst;
-    let isPaidToday = false;
-    let expAmt = 0;
-    let instStatus: string = 'PENDING';
-    let instExpected = 0;
-
-    if (targetInst) {
-      instExpected = targetInst.expectedAmount;
-      groupExpected += targetInst.expectedAmount;
-
-      const targetDueMidnight = new Date(targetInst.dueDate);
-      targetDueMidnight.setHours(0, 0, 0, 0);
-
-      if (targetInst.status === 'PAID') {
-        isPaidToday = true;
-        instStatus = 'PAID';
-        expAmt = 0;
-      } else if (targetInst.status === 'PARTIAL') {
-        isPaidToday = false;
-        instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PARTIAL';
-        expAmt = targetInst.balanceAmount;
-      } else {
-        isPaidToday = false;
-        instStatus = targetDueMidnight < todayMidnight ? 'OVERDUE' : 'PENDING';
-        expAmt = targetInst.balanceAmount;
+    // Route Expected Due represents this week's scheduled amount to be collected
+    if (isLoanClosedOrSettled) {
+      if (paidOnRouteDate > 0) {
+        groupExpected += paidOnRouteDate;
       }
     } else {
-      if (l.status === 'CLOSED' || (l.outstandingTotal || 0) <= 0) {
-        const lastPaidInst = loanInsts.length > 0 ? loanInsts[loanInsts.length - 1] : null;
-        instToDisplay = lastPaidInst;
+      groupExpected += (regularWeeklyAmount || paidOnRouteDate);
+    }
+
+    // 2. Unpaid installments in strict chronological FIFO order
+    const unpaidInsts = loanInsts.filter(i => i.status !== 'PAID' && (i.balanceAmount > 0));
+    const nextUnpaidInst = unpaidInsts[0];
+
+    let instToDisplay = nextUnpaidInst;
+    let isPaidToday = false;
+    let expAmt = 0;
+    let remainingThisWeek = 0;
+    let instStatus: string = 'PENDING';
+    let overdueWeeks = 0;
+    let totalDueUpToToday = 0;
+
+    if (paidOnRouteDate > 0) {
+      // Payments were recorded on this route date
+      const duesUpToThisWeekRemaining = unpaidInsts.filter(i => new Date(i.dueDate).getTime() <= endOfDay.getTime());
+      if (duesUpToThisWeekRemaining.length === 0 || paidOnRouteDate >= regularWeeklyAmount || isLoanClosedOrSettled) {
+        isPaidToday = true;
         instStatus = 'PAID';
-        isPaidToday = false;
+        const paidTodayInst = loanInsts.filter(i => i.paidDate && new Date(i.paidDate).getTime() >= startOfDay.getTime() && new Date(i.paidDate).getTime() <= endOfDay.getTime()).pop();
+        instToDisplay = paidTodayInst || scheduledThisWeek || nextUnpaidInst || loanInsts[loanInsts.length - 1];
         expAmt = 0;
-        instExpected = 0;
+        remainingThisWeek = 0;
+        overdueWeeks = 0;
       } else {
-        const nextPendingInst = loanInsts.find(i => ['PENDING', 'PARTIAL', 'OVERDUE'].includes(i.status));
-        instToDisplay = nextPendingInst;
-        if (nextPendingInst) {
-          const nextDueMidnight = new Date(nextPendingInst.dueDate);
-          nextDueMidnight.setHours(0, 0, 0, 0);
-          instStatus = nextPendingInst.status === 'PAID' ? 'PAID' : (nextDueMidnight < todayMidnight ? 'OVERDUE' : nextPendingInst.status);
-        } else {
-          instStatus = l.status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
+        isPaidToday = false;
+        instStatus = 'PARTIAL';
+        instToDisplay = nextUnpaidInst;
+        remainingThisWeek = Math.max(0, regularWeeklyAmount - paidOnRouteDate);
+        expAmt = remainingThisWeek;
+      }
+    } else if (isLoanClosedOrSettled) {
+      const lastPaidInst = loanInsts.length > 0 ? loanInsts[loanInsts.length - 1] : null;
+      instToDisplay = lastPaidInst;
+      instStatus = 'PAID';
+      isPaidToday = false;
+      expAmt = 0;
+      remainingThisWeek = 0;
+      overdueWeeks = 0;
+    } else if (isBadDebt) {
+      instToDisplay = nextUnpaidInst || loanInsts[loanInsts.length - 1];
+      instStatus = 'BAD_DEBT';
+      if (paidOnRouteDate > 0) {
+        isPaidToday = paidOnRouteDate >= regularWeeklyAmount;
+        remainingThisWeek = Math.max(0, regularWeeklyAmount - paidOnRouteDate);
+        expAmt = remainingThisWeek;
+      } else {
+        isPaidToday = false;
+        expAmt = regularWeeklyAmount;
+        remainingThisWeek = regularWeeklyAmount;
+      }
+      overdueWeeks = 0;
+    } else {
+      if (!nextUnpaidInst) {
+        // All installments cleared up to date
+        instStatus = 'PAID';
+        instToDisplay = loanInsts[loanInsts.length - 1];
+        expAmt = 0;
+        remainingThisWeek = 0;
+        overdueWeeks = 0;
+      } else {
+        instToDisplay = nextUnpaidInst;
+        // This week's expected amount to be collected
+        expAmt = regularWeeklyAmount;
+        remainingThisWeek = regularWeeklyAmount;
+
+        // Total dues up to this week (FIFO cumulative dues for presets/balance)
+        const duesUpToThisWeek = unpaidInsts.filter(i => new Date(i.dueDate).getTime() <= endOfDay.getTime());
+        totalDueUpToToday = duesUpToThisWeek.reduce((sum, i) => sum + i.balanceAmount, 0);
+        if (totalDueUpToToday === 0) {
+          totalDueUpToToday = nextUnpaidInst.balanceAmount;
         }
-        expAmt = nextPendingInst ? nextPendingInst.balanceAmount : 0;
-        instExpected = nextPendingInst ? nextPendingInst.expectedAmount : 0;
-        groupExpected += expAmt;
+
+        // Count overdue weeks (due before todayMidnight)
+        const pastDueInsts = unpaidInsts.filter(i => new Date(i.dueDate).getTime() < todayMidnight.getTime() || i.status === 'OVERDUE');
+        overdueWeeks = pastDueInsts.length;
+
+        if (overdueWeeks > 0 || l.status === 'OVERDUE') {
+          instStatus = 'OVERDUE';
+        } else if (nextUnpaidInst.status === 'PARTIAL') {
+          instStatus = 'PARTIAL';
+        } else {
+          instStatus = 'PENDING';
+        }
       }
     }
+
+    groupRemaining += remainingThisWeek;
 
     memberRows.push({
       loanId: l._id,
@@ -141,62 +193,113 @@ function buildRouteMemberRows(
       installmentNumber: instToDisplay?.installmentNumber || null,
       installmentId: instToDisplay?._id || null,
       installmentStatus: instStatus,
+      isBadDebt,
+      overdueWeeks,
       collectionDay: collectionDay || l.collectionDay,
       isPaidToday,
-      installmentExpected: instExpected,
-      installmentPaid: instToDisplay?.paidAmount || (isPaidToday ? instExpected : 0),
+      installmentExpected: regularWeeklyAmount,
+      installmentPaid: instToDisplay?.paidAmount || (isPaidToday ? regularWeeklyAmount : 0),
       expectedAmount: expAmt,
-      todayPaid: paidOnRouteDate > 0 ? paidOnRouteDate : (isPaidToday ? instExpected : 0),
-      outstandingTotal: l.outstandingTotal,
+      totalOverdueDue: Math.min(outTotal, totalDueUpToToday || expAmt),
+      todayPaid: paidOnRouteDate > 0 ? paidOnRouteDate : (isPaidToday ? regularWeeklyAmount : 0),
+      outstandingTotal: outTotal,
       tenureWeeks: l.tenureWeeks
     });
   }
 
+  // Ensure Bad Debts are shown at the very last place of each group's member list
+  memberRows.sort((a, b) => {
+    const aBad = (a.installmentStatus === 'BAD_DEBT' || a.isBadDebt) ? 1 : 0;
+    const bBad = (b.installmentStatus === 'BAD_DEBT' || b.isBadDebt) ? 1 : 0;
+    if (aBad !== bBad) return aBad - bBad;
+    return 0;
+  });
+
   return {
     groupExpected,
     groupOutstanding,
+    groupRemaining,
     memberRows
   };
 }
 
+// Active Collection Staff list for route filtering
+router.get('/staff-list', async (req: Request, res: Response) => {
+  try {
+    const branchFilter: any = {};
+    if (req.user?.role !== 'MAIN_ADMIN') {
+      branchFilter.branchId = req.user?.branchId;
+    } else if (req.query.branchId && req.query.branchId !== 'undefined' && req.query.branchId !== 'null' && req.query.branchId !== 'ALL') {
+      branchFilter.branchId = req.query.branchId;
+    }
+
+    const staff = await User.find({ ...branchFilter, role: 'COLLECTION_STAFF', active: true })
+      .select('_id name username role branchId phone')
+      .sort({ name: 1 })
+      .lean();
+
+    res.json({ success: true, staff });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Daily route collection sheet
 router.get('/daily-sheet', async (req: Request, res: Response) => {
   try {
-    const { weekday = 'MONDAY', branchId } = req.query;
+    const { weekday = 'MONDAY', branchId, staffId: queryStaffId, date: customDateStr } = req.query;
     const weekdayStr = String(weekday).toUpperCase();
     const query: any = { collectionDay: weekdayStr };
 
-    const { targetDate, startOfDay, endOfDay } = getRouteDateForWeekday(weekdayStr);
+    let refDate = new Date();
+    if (customDateStr && typeof customDateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(customDateStr)) {
+      const parts = customDateStr.split('-');
+      refDate = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0));
+    }
 
-    if (req.user?.role === 'COLLECTION_STAFF') {
-      query.branchId = req.user?.branchId;
-      const staffId = req.user?.id || req.user?._id;
-      const staffUsername = req.user?.username || '';
-      const staffName = req.user?.name || '';
-      const nameParts = staffName.split(' ').filter(Boolean);
-      const nameRegexes = [
-        new RegExp(`^${staffUsername}$`, 'i'),
-        new RegExp(`^${staffName}$`, 'i'),
-        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-      ];
+    const { targetDate, startOfDay, endOfDay } = getRouteDateForWeekday(weekdayStr, refDate);
 
-      const assignedLoanGroupIds = await Loan.find({
-        $or: [
-          { assignedStaffId: staffId },
-          { assignedStaffName: { $in: nameRegexes } }
-        ],
-        status: { $in: ['ACTIVE', 'OVERDUE'] }
-      }).distinct('groupId');
+    const effectiveStaffId = req.user?.role === 'COLLECTION_STAFF'
+      ? (req.user?.id || req.user?._id)
+      : (queryStaffId && queryStaffId !== 'ALL' && queryStaffId !== 'undefined' && queryStaffId !== 'null' ? String(queryStaffId) : null);
 
-      query.$or = [
-        { staffId: staffId },
-        { staffName: { $in: nameRegexes } },
-        { _id: { $in: assignedLoanGroupIds } }
-      ];
-    } else if (req.user?.role !== 'MAIN_ADMIN') {
+    let staffNameRegexes: RegExp[] = [];
+
+    if (req.user?.role !== 'MAIN_ADMIN') {
       query.branchId = req.user?.branchId;
     } else if (branchId && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
       query.branchId = branchId;
+    }
+
+    if (effectiveStaffId) {
+      const staffUser = (req.user?.role === 'COLLECTION_STAFF' && (String(req.user?.id) === String(effectiveStaffId) || String(req.user?._id) === String(effectiveStaffId)))
+        ? req.user
+        : await User.findById(effectiveStaffId).lean();
+
+      if (staffUser) {
+        const staffUsername = staffUser.username || '';
+        const staffName = staffUser.name || '';
+        const nameParts = staffName.split(' ').filter(Boolean);
+        staffNameRegexes = [
+          new RegExp(`^${staffUsername}$`, 'i'),
+          new RegExp(`^${staffName}$`, 'i'),
+          ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
+        ];
+
+        const assignedLoanGroupIds = await Loan.find({
+          $or: [
+            { assignedStaffId: staffUser.id || staffUser._id },
+            { assignedStaffName: { $in: staffNameRegexes } }
+          ],
+          status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] }
+        }).distinct('groupId');
+
+        query.$or = [
+          { staffId: staffUser.id || staffUser._id },
+          { staffName: { $in: staffNameRegexes } },
+          { _id: { $in: assignedLoanGroupIds } }
+        ];
+      }
     }
 
     const groups = await Group.find(query).sort({ groupCode: 1 }).lean();
@@ -212,35 +315,50 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
 
     const groupIds = groups.map(g => g._id);
 
-    // BATCH 1: Fetch all loans for these groups in a single query
-    const loanQuery: any = { groupId: { $in: groupIds }, status: { $in: ['ACTIVE', 'OVERDUE'] } };
-    if (req.user?.role === 'COLLECTION_STAFF') {
-      const staffId = req.user?.id || req.user?._id;
-      const staffUsername = req.user?.username || '';
-      const staffName = req.user?.name || '';
-      const nameParts = staffName.split(' ').filter(Boolean);
-      const nameRegexes = [
-        new RegExp(`^${staffUsername}$`, 'i'),
-        new RegExp(`^${staffName}$`, 'i'),
-        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-      ];
+    // BATCH 1: Fetch all route payments for these groups on target date in a single query
+    const allRoutePayments = await Payment.find({
+      groupId: { $in: groupIds },
+      paymentDate: { $gte: startOfDay, $lte: endOfDay },
+      isReversed: false
+    }).lean();
 
-      loanQuery.$or = [
-        { assignedStaffId: staffId },
-        { assignedStaffName: { $in: nameRegexes } },
-        { assignedStaffId: null }
+    const paidLoanIds = allRoutePayments.map(p => p.loanId).filter(Boolean);
+
+    // BATCH 2: Fetch all loans for these groups (active/overdue or collected on date, disbursed on or before this viewing date)
+    const loanFilter: any = {
+      $and: [
+        {
+          $or: [
+            { disbursedDate: { $lte: endOfDay } },
+            { disbursedDate: null },
+            { _id: { $in: paidLoanIds } }
+          ]
+        },
+        {
+          $or: [
+            { status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] } },
+            { _id: { $in: paidLoanIds } }
+          ]
+        }
+      ]
+    };
+    if (effectiveStaffId) {
+      loanFilter.$and = [
+        {
+          $or: [
+            { assignedStaffId: effectiveStaffId },
+            { assignedStaffName: { $in: staffNameRegexes } },
+            { assignedStaffId: null },
+            { _id: { $in: paidLoanIds } }
+          ]
+        }
       ];
     }
+    const loanQuery: any = { groupId: { $in: groupIds }, ...loanFilter };
 
     const allLoans = await Loan.find(loanQuery)
       .populate('customerId', 'name phone customerId')
       .lean();
-
-    // BATCH 2: Fetch all route payments for these groups on target date in a single query
-    const allRoutePayments = await Payment.find({
-      groupId: { $in: groupIds },
-      paymentDate: { $gte: startOfDay, $lte: endOfDay }
-    }).lean();
 
     // BATCH 3: Fetch all installments for all retrieved loans in a single query
     const allLoanIds = allLoans.map(l => l._id);
@@ -284,7 +402,7 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
       const grpPayments = paymentsByGroup.get(String(grp._id)) || [];
       const groupCollected = grpPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-      const { groupExpected, groupOutstanding, memberRows } = buildRouteMemberRows(
+      const { groupExpected, groupOutstanding, groupRemaining, memberRows } = buildRouteMemberRows(
         grpLoans,
         grpPayments,
         installmentsByLoan,
@@ -294,10 +412,16 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
         grp.collectionDay
       );
 
+      // If group has no members active on or before this viewing date and no collections on this date, skip it!
+      if (memberRows.length === 0 && groupCollected === 0) {
+        continue;
+      }
+
       groupSummaries.push({
         group: grp,
         expectedTotal: groupExpected,
         collectedToday: groupCollected,
+        remainingDue: groupRemaining,
         outstandingTotal: groupOutstanding,
         members: memberRows
       });
@@ -317,75 +441,108 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
 // Weekly consolidated route collection sheet (Manager & Admin)
 router.get('/weekly-sheet', async (req: Request, res: Response) => {
   try {
-    const { branchId } = req.query;
+    const { branchId, staffId: queryStaffId, date: customDateStr } = req.query;
     const baseQuery: any = {};
 
-    if (req.user?.role === 'COLLECTION_STAFF') {
-      baseQuery.branchId = req.user?.branchId;
-      const staffId = req.user?.id || req.user?._id;
-      const staffUsername = req.user?.username || '';
-      const staffName = req.user?.name || '';
-      const nameParts = staffName.split(' ').filter(Boolean);
-      const nameRegexes = [
-        new RegExp(`^${staffUsername}$`, 'i'),
-        new RegExp(`^${staffName}$`, 'i'),
-        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-      ];
+    let refDate = new Date();
+    if (customDateStr && typeof customDateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(customDateStr)) {
+      const parts = customDateStr.split('-');
+      refDate = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0));
+    }
 
-      const assignedLoanGroupIds = await Loan.find({
-        $or: [
-          { assignedStaffId: staffId },
-          { assignedStaffName: { $in: nameRegexes } }
-        ],
-        status: { $in: ['ACTIVE', 'OVERDUE'] }
-      }).distinct('groupId');
+    const effectiveStaffId = req.user?.role === 'COLLECTION_STAFF'
+      ? (req.user?.id || req.user?._id)
+      : (queryStaffId && queryStaffId !== 'ALL' && queryStaffId !== 'undefined' && queryStaffId !== 'null' ? String(queryStaffId) : null);
 
-      baseQuery.$or = [
-        { staffId: staffId },
-        { staffName: { $in: nameRegexes } },
-        { _id: { $in: assignedLoanGroupIds } }
-      ];
-    } else if (req.user?.role !== 'MAIN_ADMIN') {
+    let staffNameRegexes: RegExp[] = [];
+
+    if (req.user?.role !== 'MAIN_ADMIN') {
       baseQuery.branchId = req.user?.branchId;
     } else if (branchId && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
       baseQuery.branchId = branchId;
     }
 
-    const weekdays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'];
+    if (effectiveStaffId) {
+      const staffUser = (req.user?.role === 'COLLECTION_STAFF' && (String(req.user?.id) === String(effectiveStaffId) || String(req.user?._id) === String(effectiveStaffId)))
+        ? req.user
+        : await User.findById(effectiveStaffId).lean();
+
+      if (staffUser) {
+        const staffUsername = staffUser.username || '';
+        const staffName = staffUser.name || '';
+        const nameParts = staffName.split(' ').filter(Boolean);
+        staffNameRegexes = [
+          new RegExp(`^${staffUsername}$`, 'i'),
+          new RegExp(`^${staffName}$`, 'i'),
+          ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
+        ];
+
+        const assignedLoanGroupIds = await Loan.find({
+          $or: [
+            { assignedStaffId: staffUser.id || staffUser._id },
+            { assignedStaffName: { $in: staffNameRegexes } }
+          ],
+          status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] }
+        }).distinct('groupId');
+
+        baseQuery.$or = [
+          { staffId: staffUser.id || staffUser._id },
+          { staffName: { $in: staffNameRegexes } },
+          { _id: { $in: assignedLoanGroupIds } }
+        ];
+      }
+    }
+
+    const weekdays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
     const groups = await Group.find({ ...baseQuery, collectionDay: { $in: weekdays } }).sort({ groupCode: 1 }).lean();
     const groupIds = groups.map(g => g._id);
 
-    // Batch loans for all weekly groups in a single query
-    const loanQuery: any = { groupId: { $in: groupIds }, status: { $in: ['ACTIVE', 'OVERDUE'] } };
-    if (req.user?.role === 'COLLECTION_STAFF') {
-      const staffId = req.user?.id || req.user?._id;
-      const staffUsername = req.user?.username || '';
-      const staffName = req.user?.name || '';
-      const nameParts = staffName.split(' ').filter(Boolean);
-      const nameRegexes = [
-        new RegExp(`^${staffUsername}$`, 'i'),
-        new RegExp(`^${staffName}$`, 'i'),
-        ...nameParts.map(p => new RegExp(`^${p}$`, 'i'))
-      ];
-
-      loanQuery.$or = [
-        { assignedStaffId: staffId },
-        { assignedStaffName: { $in: nameRegexes } },
-        { assignedStaffId: null }
-      ];
-    }
-
-    const allLoans = await Loan.find(loanQuery).populate('customerId', 'name phone customerId').lean();
-    const allLoanIds = allLoans.map(l => l._id);
-
-    // Determine week boundaries (Monday startOfDay to Thursday endOfDay)
-    const { startOfDay: weekStart } = getRouteDateForWeekday('MONDAY');
-    const { endOfDay: weekEnd } = getRouteDateForWeekday('THURSDAY');
+    // Determine week boundaries (Monday startOfDay to Sunday endOfDay)
+    const { startOfDay: weekStart } = getRouteDateForWeekday('MONDAY', refDate);
+    const { endOfDay: weekEnd } = getRouteDateForWeekday('SUNDAY', refDate);
 
     const allPayments = await Payment.find({
       groupId: { $in: groupIds },
-      paymentDate: { $gte: weekStart, $lte: weekEnd }
+      paymentDate: { $gte: weekStart, $lte: weekEnd },
+      isReversed: false
     }).lean();
+
+    const paidLoanIds = allPayments.map(p => p.loanId).filter(Boolean);
+
+    // Batch loans for all weekly groups in a single query (disbursed on or before this viewing week)
+    const loanFilter: any = {
+      $and: [
+        {
+          $or: [
+            { disbursedDate: { $lte: weekEnd } },
+            { disbursedDate: null },
+            { _id: { $in: paidLoanIds } }
+          ]
+        },
+        {
+          $or: [
+            { status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] } },
+            { _id: { $in: paidLoanIds } }
+          ]
+        }
+      ]
+    };
+    if (effectiveStaffId) {
+      loanFilter.$and = [
+        {
+          $or: [
+            { assignedStaffId: effectiveStaffId },
+            { assignedStaffName: { $in: staffNameRegexes } },
+            { assignedStaffId: null },
+            { _id: { $in: paidLoanIds } }
+          ]
+        }
+      ];
+    }
+    const loanQuery: any = { groupId: { $in: groupIds }, ...loanFilter };
+
+    const allLoans = await Loan.find(loanQuery).populate('customerId', 'name phone customerId').lean();
+    const allLoanIds = allLoans.map(l => l._id);
 
     const allInstallments = await Installment.find({
       loanId: { $in: allLoanIds }
@@ -420,15 +577,17 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
     const allGroupsList: any[] = [];
     let weeklyExpected = 0;
     let weeklyCollected = 0;
+    let weeklyRemaining = 0;
     let weeklyOutstanding = 0;
     let totalMembers = 0;
 
     for (const day of weekdays) {
-      const { startOfDay, endOfDay } = getRouteDateForWeekday(day);
+      const { startOfDay, endOfDay } = getRouteDateForWeekday(day, refDate);
       const dayGroups = groups.filter(g => g.collectionDay === day);
       const dayGroupSummaries: any[] = [];
       let dayExpected = 0;
       let dayCollected = 0;
+      let dayRemaining = 0;
       let dayMembers = 0;
 
       for (const grp of dayGroups) {
@@ -444,7 +603,7 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
         });
         const grpColl = dayPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-        const { groupExpected, groupOutstanding, memberRows } = buildRouteMemberRows(
+        const { groupExpected, groupOutstanding, groupRemaining, memberRows } = buildRouteMemberRows(
           grpLoans,
           dayPayments,
           installmentsByLoan,
@@ -454,11 +613,17 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
           day
         );
 
+        // If group has no members active on or before this viewing week and no collections in this week, skip it!
+        if (memberRows.length === 0 && grpColl === 0) {
+          continue;
+        }
+
         const summaryItem = {
           group: grp,
           collectionDay: day,
           expectedTotal: groupExpected,
           collectedToday: grpColl,
+          remainingDue: groupRemaining,
           outstandingTotal: groupOutstanding,
           members: memberRows
         };
@@ -468,18 +633,20 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
 
         dayExpected += groupExpected;
         dayCollected += grpColl;
+        dayRemaining += groupRemaining;
         dayMembers += memberRows.length;
         weeklyOutstanding += groupOutstanding;
       }
 
       weeklyExpected += dayExpected;
       weeklyCollected += dayCollected;
+      weeklyRemaining += dayRemaining;
       totalMembers += dayMembers;
 
       daysData[day] = {
         expected: dayExpected,
         collected: dayCollected,
-        remaining: Math.max(0, dayExpected - dayCollected),
+        remaining: dayRemaining,
         groupsCount: dayGroups.length,
         membersCount: dayMembers,
         groups: dayGroupSummaries
@@ -491,7 +658,7 @@ router.get('/weekly-sheet', async (req: Request, res: Response) => {
       weeklySummary: {
         weeklyExpected,
         weeklyCollected,
-        weeklyRemaining: Math.max(0, weeklyExpected - weeklyCollected),
+        weeklyRemaining,
         weeklyOutstanding,
         totalGroups: allGroupsList.length,
         totalMembers
@@ -536,7 +703,7 @@ router.get('/staff-summary', async (req: Request, res: Response) => {
 
     const allBranchLoans = await Loan.find({
       groupId: { $in: allBranchGroupIds },
-      status: { $in: ['ACTIVE', 'OVERDUE'] }
+      status: { $in: ['ACTIVE', 'OVERDUE', 'BAD_DEBT'] }
     }).lean();
 
     const allBranchLoanIds = allBranchLoans.map(l => l._id);
@@ -548,7 +715,7 @@ router.get('/staff-summary', async (req: Request, res: Response) => {
 
     const allActiveInsts = await Installment.find({
       loanId: { $in: allBranchLoanIds },
-      status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
+      status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE', 'BAD_DEBT'] }
     }).sort({ installmentNumber: 1 }).lean();
 
     // Map in memory
@@ -729,10 +896,18 @@ router.post('/record', async (req: Request, res: Response) => {
       }
       await inst.save();
 
+      const ratio = inst.expectedAmount > 0 ? allocateAmt / inst.expectedAmount : 1;
+      const principalPortion = Math.round((inst.allocatedPrincipal || 0) * ratio);
+      const savingsPortion = Math.round((inst.allocatedSavings || 0) * ratio);
+      const interestPortion = allocateAmt - principalPortion - savingsPortion;
+
       allocations.push({
         installmentId: inst._id,
         installmentNumber: inst.installmentNumber,
-        amount: allocateAmt
+        amount: allocateAmt,
+        principalPortion,
+        interestPortion,
+        savingsPortion
       });
     }
 
@@ -833,7 +1008,7 @@ router.post('/record-group', async (req: Request, res: Response) => {
       return;
     }
 
-    const targetWeekday = weekday || grp.collectionDay || 'THURSDAY';
+    const targetWeekday = weekday || grp.collectionDay || 'MONDAY';
     const routeInfo = getRouteDateForWeekday(targetWeekday);
     const { startOfDay, endOfDay } = routeInfo;
     // Target installment is matched against the route schedule, but physical cash is received today
@@ -848,30 +1023,54 @@ router.post('/record-group', async (req: Request, res: Response) => {
     let groupTotalCollected = 0;
 
     for (const loan of loans) {
-      let targetInst = await Installment.findOne({
+      // Find all unpaid installments in strict FIFO sequence
+      const unpaidInsts = await Installment.find({
         loanId: loan._id,
-        dueDate: { $gte: startOfDay, $lte: endOfDay },
-        balanceAmount: { $gt: 0 }
-      });
+        status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
+      }).sort({ installmentNumber: 1 });
 
-      if (!targetInst) {
-        targetInst = await Installment.findOne({
-          loanId: loan._id,
-          status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-        }).sort({ installmentNumber: 1 });
-      }
-
-      if (!targetInst || targetInst.balanceAmount <= 0) {
+      if (unpaidInsts.length === 0) {
         continue;
       }
 
-      const payAmt = targetInst.balanceAmount;
+      // Collect dues up to this route date (or at least the first unpaid)
+      const duesUpToTarget = unpaidInsts.filter(i => new Date(i.dueDate).getTime() <= endOfDay.getTime());
+      const instsToPay = duesUpToTarget.length > 0 ? duesUpToTarget : [unpaidInsts[0]];
+      const payAmt = Math.min(loan.outstandingTotal, instsToPay.reduce((sum, i) => sum + i.balanceAmount, 0));
 
-      targetInst.paidAmount += payAmt;
-      targetInst.balanceAmount = 0;
-      targetInst.status = 'PAID';
-      targetInst.paidDate = paymentDate;
-      await targetInst.save();
+      if (payAmt <= 0) continue;
+
+      let remainingToAlloc = payAmt;
+      const allocations: any[] = [];
+
+      for (const inst of instsToPay) {
+        if (remainingToAlloc <= 0) break;
+        const alloc = Math.min(remainingToAlloc, inst.balanceAmount);
+        inst.paidAmount += alloc;
+        inst.balanceAmount -= alloc;
+        remainingToAlloc -= alloc;
+        if (inst.balanceAmount <= 0) {
+          inst.status = 'PAID';
+          inst.paidDate = paymentDate;
+        } else {
+          inst.status = 'PARTIAL';
+        }
+        await inst.save();
+
+        const ratio = inst.expectedAmount > 0 ? alloc / inst.expectedAmount : 1;
+        const principalPortion = Math.round((inst.allocatedPrincipal || 0) * ratio);
+        const savingsPortion = Math.round((inst.allocatedSavings || 0) * ratio);
+        const interestPortion = alloc - principalPortion - savingsPortion;
+
+        allocations.push({
+          installmentId: inst._id,
+          installmentNumber: inst.installmentNumber,
+          amount: alloc,
+          principalPortion,
+          interestPortion,
+          savingsPortion
+        });
+      }
 
       const receiptNumber = await getNextReceiptNumber();
 
@@ -885,12 +1084,8 @@ router.post('/record-group', async (req: Request, res: Response) => {
         paymentDate,
         amount: payAmt,
         paymentMethod,
-        remarks: `${remarks} - W${targetInst.installmentNumber}`,
-        allocations: [{
-          installmentId: targetInst._id,
-          installmentNumber: targetInst.installmentNumber,
-          amount: payAmt
-        }]
+        remarks: `${remarks} - W${instsToPay[0].installmentNumber}`,
+        allocations
       });
 
       loan.totalPaid += payAmt;

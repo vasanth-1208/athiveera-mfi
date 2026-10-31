@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { 
-  BookOpen, 
   Plus, 
   Wallet, 
   ArrowDownRight, 
@@ -22,7 +21,15 @@ import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 import { useAuth } from '../context/AuthContext';
 
-type CashbookTab = 'DAILY_LEDGER' | 'DENOMINATIONS' | 'STAFF_DENOMINATIONS' | 'JOURNAL';
+type CashbookTab = 'DAILY_LEDGER' | 'DENOMINATIONS';
+
+const getTodayDateString = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 export const Cashbook: React.FC = () => {
   const { selectedBranchId, selectedBranch } = useBranch();
@@ -30,7 +37,7 @@ export const Cashbook: React.FC = () => {
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<CashbookTab>('DAILY_LEDGER');
-  const [selectedDate, setSelectedDate] = useState<string>('2026-10-29');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayDateString());
   const [accountType, setAccountType] = useState<'CASH' | 'BANK'>('CASH');
   const [search, setSearch] = useState('');
   const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
@@ -54,18 +61,7 @@ export const Cashbook: React.FC = () => {
   const { data: denomData, isLoading: isDenomLoading } = useQuery({
     queryKey: ['denominations', selectedBranchId, selectedDate],
     queryFn: () => api.getDenominations({ branchId: selectedBranchId, date: selectedDate }),
-    enabled: activeTab === 'DENOMINATIONS' || activeTab === 'STAFF_DENOMINATIONS'
-  });
-
-  // Raw Journal Transactions Query
-  const { data: journalData, isLoading: isJournalLoading } = useQuery({
-    queryKey: ['cashbook', selectedBranchId, accountType, search],
-    queryFn: () => api.getCashbook({
-      branchId: selectedBranchId,
-      accountType,
-      category: search
-    }),
-    enabled: activeTab === 'JOURNAL'
+    enabled: activeTab === 'DENOMINATIONS'
   });
 
   // Denomination Local Form State
@@ -82,30 +78,101 @@ export const Cashbook: React.FC = () => {
     notes: ''
   });
 
-  // Staff Denominations Local Form State (Vignesh & Sekar)
-  const [vigneshForm, setVigneshForm] = useState({
-    notes500: 39,
-    notes200: 12,
-    notes100: 15,
-    notes50: 2,
-    notes20: 0,
-    notes10: 0,
-    coins: 0,
-    sbAcc: 2550,
-    caAcc: 0
+  // Staff List Query (Enabled to discover all active collection staff of branch)
+  const { data: staffListData } = useQuery({
+    queryKey: ['staffList', selectedBranchId],
+    queryFn: () => api.getStaffList({ branchId: selectedBranchId }),
   });
+  const staffList = staffListData?.staff || [];
 
-  const [sekarForm, setSekarForm] = useState({
-    notes500: 27,
+  // Dynamic Staff Handover Form State: Map of staffKey (uppercase trimmed name) -> counts
+  interface StaffDenomForm {
+    notes500: number;
+    notes200: number;
+    notes100: number;
+    notes50: number;
+    notes20: number;
+    notes10: number;
+    coins: number;
+    sbAcc: number;
+    caAcc: number;
+  }
+
+  const emptyStaffForm: StaffDenomForm = {
+    notes500: 0,
     notes200: 0,
-    notes100: 9,
-    notes50: 2,
+    notes100: 0,
+    notes50: 0,
     notes20: 0,
     notes10: 0,
     coins: 0,
-    sbAcc: 1850,
+    sbAcc: 0,
     caAcc: 0
-  });
+  };
+
+  const calcStaffTotal = (form?: StaffDenomForm) => {
+    if (!form) return 0;
+    return (
+      (form.notes500 * 500) +
+      (form.notes200 * 200) +
+      (form.notes100 * 100) +
+      (form.notes50 * 50) +
+      (form.notes20 * 20) +
+      (form.notes10 * 10) +
+      (form.coins || 0) +
+      (form.sbAcc || 0) +
+      (form.caAcc || 0)
+    );
+  };
+
+  const [staffDenomForms, setStaffDenomForms] = useState<Record<string, StaffDenomForm>>({});
+
+  // Helper to match staff names without creating duplicate entries
+  const findStaffMatch = (rawName: string, candidates: Array<{ id?: string; name: string }>) => {
+    const rawClean = (rawName || '').toUpperCase().trim();
+    if (!rawClean) return null;
+    return candidates.find(candidate => {
+      const cClean = candidate.name.toUpperCase().trim();
+      if (cClean === rawClean) return true;
+      const cParts = cClean.split(/\s+/);
+      const rParts = rawClean.split(/\s+/);
+      if (cParts.some(p => p === rawClean) || rParts.some(p => p === cClean)) return true;
+      if (cClean.includes(rawClean) || rawClean.includes(cClean)) return true;
+      return false;
+    });
+  };
+
+  // Compute active collection staff dynamically for this branch
+  const activeStaffList = useMemo(() => {
+    const list: Array<{ id?: string; name: string }> = [];
+
+    // 1. Staff from branch user database (source of truth)
+    staffList.forEach((s: any) => {
+      if (s.name && !list.some(item => item.name.toUpperCase().trim() === s.name.toUpperCase().trim())) {
+        list.push({ id: s._id, name: s.name });
+      }
+    });
+
+    // 2. Staff from saved denomination records if any (only add if not matched to existing staff!)
+    if (denomData?.denomination?.staffDenominations) {
+      denomData.denomination.staffDenominations.forEach((s: any) => {
+        if (s.staffName) {
+          const match = findStaffMatch(s.staffName, list);
+          if (!match) {
+            list.push({ name: s.staffName });
+          }
+        }
+      });
+    }
+
+    // 3. Fallback defaults if no staff records exist yet
+    if (list.length === 0) {
+      list.push({ name: 'Vignesh P' });
+      list.push({ name: 'Chandra Sekar' });
+    }
+
+    return list;
+  }, [staffList, denomData]);
 
   // Populate from fetched denomData
   useEffect(() => {
@@ -125,37 +192,42 @@ export const Cashbook: React.FC = () => {
       });
 
       if (d.staffDenominations && d.staffDenominations.length > 0) {
-        const vig = d.staffDenominations.find((s: any) => s.staffName?.toUpperCase().includes('VIGNESH'));
-        if (vig) {
-          setVigneshForm({
-            notes500: vig.notes500 || 0,
-            notes200: vig.notes200 || 0,
-            notes100: vig.notes100 || 0,
-            notes50: vig.notes50 || 0,
-            notes20: vig.notes20 || 0,
-            notes10: vig.notes10 || 0,
-            coins: vig.coins || 0,
-            sbAcc: vig.sbAcc || 0,
-            caAcc: vig.caAcc || 0
-          });
-        }
-        const sek = d.staffDenominations.find((s: any) => s.staffName?.toUpperCase().includes('SEKAR'));
-        if (sek) {
-          setSekarForm({
-            notes500: sek.notes500 || 0,
-            notes200: sek.notes200 || 0,
-            notes100: sek.notes100 || 0,
-            notes50: sek.notes50 || 0,
-            notes20: sek.notes20 || 0,
-            notes10: sek.notes10 || 0,
-            coins: sek.coins || 0,
-            sbAcc: sek.sbAcc || 0,
-            caAcc: sek.caAcc || 0
-          });
-        }
+        const nextForms: Record<string, StaffDenomForm> = {};
+        d.staffDenominations.forEach((s: any) => {
+          const match = findStaffMatch(s.staffName, activeStaffList);
+          const targetKey = match ? match.name.toUpperCase().trim() : s.staffName?.toUpperCase().trim();
+          if (targetKey) {
+            const hasVals = (s.notes500 || s.notes200 || s.notes100 || s.notes50 || s.notes20 || s.notes10 || s.sbAcc || s.caAcc);
+            const existing = nextForms[targetKey];
+            if (!existing || hasVals) {
+              nextForms[targetKey] = {
+                notes500: s.notes500 || 0,
+                notes200: s.notes200 || 0,
+                notes100: s.notes100 || 0,
+                notes50: s.notes50 || 0,
+                notes20: s.notes20 || 0,
+                notes10: s.notes10 || 0,
+                coins: s.coins || 0,
+                sbAcc: s.sbAcc || 0,
+                caAcc: s.caAcc || 0
+              };
+            }
+          }
+        });
+        setStaffDenomForms(prev => ({ ...prev, ...nextForms }));
       }
     }
-  }, [denomData]);
+  }, [denomData, activeStaffList]);
+
+  const handleUpdateStaffField = (staffKey: string, field: keyof StaffDenomForm, value: number) => {
+    setStaffDenomForms(prev => ({
+      ...prev,
+      [staffKey]: {
+        ...(prev[staffKey] || emptyStaffForm),
+        [field]: value
+      }
+    }));
+  };
 
   // Denomination Save Mutation
   const saveDenomMutation = useMutation({
@@ -185,39 +257,21 @@ export const Cashbook: React.FC = () => {
   const variance = totalVaultCounted - currentSystemCash;
   const isTallied = Math.abs(variance) < 1;
 
-  // Staff Totals
-  const vigneshTotal = 
-    (vigneshForm.notes500 * 500) +
-    (vigneshForm.notes200 * 200) +
-    (vigneshForm.notes100 * 100) +
-    (vigneshForm.notes50 * 50) +
-    (vigneshForm.notes20 * 20) +
-    (vigneshForm.notes10 * 10) +
-    vigneshForm.coins +
-    vigneshForm.sbAcc +
-    vigneshForm.caAcc;
-
-  const sekarTotal = 
-    (sekarForm.notes500 * 500) +
-    (sekarForm.notes200 * 200) +
-    (sekarForm.notes100 * 100) +
-    (sekarForm.notes50 * 50) +
-    (sekarForm.notes20 * 20) +
-    (sekarForm.notes10 * 10) +
-    sekarForm.coins +
-    sekarForm.sbAcc +
-    sekarForm.caAcc;
-
   const handleSaveDenominations = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     saveDenomMutation.mutate({
       branchId: selectedBranchId,
       date: selectedDate,
       ...denomForm,
-      staffDenominations: [
-        { staffName: 'VIGNESH', ...vigneshForm, total: vigneshTotal },
-        { staffName: 'SEKAR', ...sekarForm, total: sekarTotal }
-      ]
+      staffDenominations: activeStaffList.map((s: any) => {
+        const key = s.name.toUpperCase().trim();
+        const form = staffDenomForms[key] || emptyStaffForm;
+        return {
+          staffName: s.name,
+          ...form,
+          total: calcStaffTotal(form)
+        };
+      })
     });
   };
 
@@ -251,9 +305,12 @@ export const Cashbook: React.FC = () => {
 
   // Date stepper
   const handleShiftDate = (days: number) => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() + days);
-    setSelectedDate(d.toISOString().split('T')[0]);
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d + days);
+    const newY = dateObj.getFullYear();
+    const newM = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const newD = String(dateObj.getDate()).padStart(2, '0');
+    setSelectedDate(`${newY}-${newM}-${newD}`);
   };
 
   return (
@@ -334,30 +391,6 @@ export const Cashbook: React.FC = () => {
           <Coins className="w-4 h-4 text-amber-500" />
           <span>Denomination Counter & Tally</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab('STAFF_DENOMINATIONS')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${
-            activeTab === 'STAFF_DENOMINATIONS'
-              ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-              : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
-          }`}
-        >
-          <Users className="w-4 h-4 text-amber-500" />
-          <span>Staff-Wise Denominations (Vignesh & Sekar)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('JOURNAL')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${
-            activeTab === 'JOURNAL'
-              ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
-              : 'bg-white border border-[#ded3be] text-stone-600 hover:bg-[#faf6ee]'
-          }`}
-        >
-          <BookOpen className="w-4 h-4 text-amber-500" />
-          <span>Journal Transactions Register</span>
-        </button>
       </div>
 
       {/* ======================================================== */}
@@ -391,12 +424,12 @@ export const Cashbook: React.FC = () => {
               <span className="text-[10px] text-rose-800 font-semibold">Disbursements & expenses</span>
             </div>
 
-            <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Closing Cash Balance</p>
-              <p className="text-xl font-black text-amber-950 mt-0.5">
+            <div className="bg-[#fffdfa] dark:bg-[#23160e] p-4 rounded-2xl border border-[#ded3be] dark:border-[#442a1b] shadow-xs">
+              <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Closing Cash Balance</p>
+              <p className="text-xl font-black text-amber-950 dark:text-white mt-0.5">
                 ₹{(ledgerData?.closingBalance || 0).toLocaleString('en-IN')}
               </p>
-              <span className="text-[10px] text-amber-800 font-semibold">Physical vault cash in safe</span>
+              <span className="text-[10px] text-amber-800 dark:text-stone-300 font-semibold">Physical vault cash in safe</span>
             </div>
           </div>
 
@@ -441,12 +474,12 @@ export const Cashbook: React.FC = () => {
 
                 <div className="space-y-2 text-xs">
                   {/* Opening Balance Row */}
-                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#fcf9f2] border border-[#ece3d4]">
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#fcf9f2] dark:bg-[#2c1c12] border border-[#ece3d4] dark:border-[#442a1b]">
                     <div>
-                      <span className="font-bold text-stone-900 block">OPENING BALANCE</span>
-                      <span className="text-[10px] text-stone-500 font-medium">Brought forward cash in safe</span>
+                      <span className="font-bold text-stone-900 dark:text-white block">OPENING BALANCE</span>
+                      <span className="text-[10px] text-stone-500 dark:text-stone-300 font-medium">Brought forward cash in safe</span>
                     </div>
-                    <span className="font-black text-stone-900 text-sm">
+                    <span className="font-black text-stone-900 dark:text-white text-sm">
                       ₹{(ledgerData?.openingBalance || 0).toLocaleString('en-IN')}
                     </span>
                   </div>
@@ -511,12 +544,12 @@ export const Cashbook: React.FC = () => {
                   )}
 
                   {/* Closing Balance Row */}
-                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#fcf9f2] border border-[#ece3d4]">
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#fcf9f2] dark:bg-[#2c1c12] border border-[#ece3d4] dark:border-[#442a1b]">
                     <div>
-                      <span className="font-bold text-amber-950 block">CLOSING BALANCE</span>
-                      <span className="text-[10px] text-stone-500 font-medium">Physical cash in office vault / safe</span>
+                      <span className="font-bold text-amber-950 dark:text-white block">CLOSING BALANCE</span>
+                      <span className="text-[10px] text-stone-500 dark:text-stone-300 font-medium">Physical cash in office vault / safe</span>
                     </div>
-                    <span className="font-black text-amber-950 text-sm">
+                    <span className="font-black text-amber-950 dark:text-white text-sm">
                       ₹{(ledgerData?.closingBalance || 0).toLocaleString('en-IN')}
                     </span>
                   </div>
@@ -844,451 +877,7 @@ export const Cashbook: React.FC = () => {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* 3. STAFF-WISE DENOMINATIONS (VIGNESH & SEKAR)             */}
-      {/* ======================================================== */}
-      {activeTab === 'STAFF_DENOMINATIONS' && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-            <div>
-              <h3 className="text-sm font-black text-stone-900">
-                Staff Field Collection Denominations — {selectedDate}
-              </h3>
-              <p className="text-[10px] text-stone-500 font-medium">
-                Enter currency notes and bank payments collected by field officers (Vignesh & Chandra Sekar)
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleSaveDenominations}
-              disabled={saveDenomMutation.isPending}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#251b14] text-amber-300 font-bold rounded-xl text-xs hover:bg-[#322319] transition cursor-pointer shadow-xs disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{saveDenomMutation.isPending ? 'Saving...' : 'Save Staff Handover'}</span>
-            </button>
-          </div>
 
-          {/* Two Side-by-Side Tables (Matching user image media_1793188883843_088a09b6.png) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Table 1: VIGNESH */}
-            <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-              <div className="p-3 bg-[#b5b0aa] border-b border-[#9c968f] text-center">
-                <h4 className="text-sm font-black text-red-700 tracking-wider">VIGNESH</h4>
-              </div>
-              <div className="p-4 bg-[#cfcbca]/40">
-                <table className="w-full text-center text-xs font-semibold">
-                  <thead className="text-stone-700 border-b border-stone-300">
-                    <tr>
-                      <th className="py-1.5">Denomination</th>
-                      <th className="py-1.5">Count</th>
-                      <th className="py-1.5 text-right">Amount (₹)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-300/80">
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">500</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes500 === 0 ? '' : vigneshForm.notes500}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes500: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes500 * 500)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">200</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes200 === 0 ? '' : vigneshForm.notes200}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes200: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes200 * 200)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">100</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes100 === 0 ? '' : vigneshForm.notes100}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes100: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes100 * 100)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">50</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes50 === 0 ? '' : vigneshForm.notes50}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes50: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes50 * 50)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">20</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes20 === 0 ? '' : vigneshForm.notes20}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes20: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes20 * 20)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">10</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.notes10 === 0 ? '' : vigneshForm.notes10}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, notes10: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(vigneshForm.notes10 * 10)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">SB Acc</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.sbAcc === 0 ? '' : vigneshForm.sbAcc}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, sbAcc: v === '' ? 0 : (parseFloat(v) || 0) }));
-                          }}
-                          className="w-20 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{vigneshForm.sbAcc}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">CA Acc</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={vigneshForm.caAcc === 0 ? '' : vigneshForm.caAcc}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setVigneshForm(prev => ({ ...prev, caAcc: v === '' ? 0 : (parseFloat(v) || 0) }));
-                          }}
-                          className="w-20 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{vigneshForm.caAcc}</td>
-                    </tr>
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-stone-950 font-black text-sm text-stone-950">
-                      <td colSpan={2} className="py-3 text-center tracking-wider">TOTAL</td>
-                      <td className="py-3 text-right">{vigneshTotal.toLocaleString('en-IN')}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-
-            {/* Table 2: SEKAR */}
-            <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-              <div className="p-3 bg-[#b5b0aa] border-b border-[#9c968f] text-center">
-                <h4 className="text-sm font-black text-red-700 tracking-wider">SEKAR</h4>
-              </div>
-              <div className="p-4 bg-[#cfcbca]/40">
-                <table className="w-full text-center text-xs font-semibold">
-                  <thead className="text-stone-700 border-b border-stone-300">
-                    <tr>
-                      <th className="py-1.5">Denomination</th>
-                      <th className="py-1.5">Count</th>
-                      <th className="py-1.5 text-right">Amount (₹)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-300/80">
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">500</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes500 === 0 ? '' : sekarForm.notes500}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes500: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes500 * 500)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">200</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes200 === 0 ? '' : sekarForm.notes200}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes200: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes200 * 200)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">100</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes100 === 0 ? '' : sekarForm.notes100}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes100: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes100 * 100)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">50</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes50 === 0 ? '' : sekarForm.notes50}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes50: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes50 * 50)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">20</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes20 === 0 ? '' : sekarForm.notes20}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes20: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes20 * 20)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">10</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.notes10 === 0 ? '' : sekarForm.notes10}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, notes10: v === '' ? 0 : (parseInt(v, 10) || 0) }));
-                          }}
-                          className="w-16 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{(sekarForm.notes10 * 10)}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">SB Acc</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.sbAcc === 0 ? '' : sekarForm.sbAcc}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, sbAcc: v === '' ? 0 : (parseFloat(v) || 0) }));
-                          }}
-                          className="w-20 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{sekarForm.sbAcc}</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 font-bold text-stone-900">CA Acc</td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          min="0"
-                          value={sekarForm.caAcc === 0 ? '' : sekarForm.caAcc}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSekarForm(prev => ({ ...prev, caAcc: v === '' ? 0 : (parseFloat(v) || 0) }));
-                          }}
-                          className="w-20 px-1.5 py-0.5 text-center font-bold bg-white border border-stone-300 rounded"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-black text-stone-900">{sekarForm.caAcc}</td>
-                    </tr>
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-stone-950 font-black text-sm text-stone-950">
-                      <td colSpan={2} className="py-3 text-center tracking-wider">TOTAL</td>
-                      <td className="py-3 text-right">{sekarTotal.toLocaleString('en-IN')}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* 4. GENERAL JOURNAL TRANSACTIONS REGISTER                 */}
-      {/* ======================================================== */}
-      {activeTab === 'JOURNAL' && (
-        <div className="space-y-6">
-          <div className="bg-[#fffdfa] rounded-2xl border border-[#ded3be] shadow-xs overflow-hidden">
-            <div className="p-4 bg-[#f6f0e4] border-b border-[#ded3be] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setAccountType('CASH')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    accountType === 'CASH'
-                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
-                      : 'bg-white border border-[#ded3be] text-stone-700 hover:bg-[#faf6ee]'
-                  }`}
-                >
-                  Vault Cash Journal
-                </button>
-                <button
-                  onClick={() => setAccountType('BANK')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    accountType === 'BANK'
-                      ? 'bg-[#251b14] text-amber-300 shadow-xs'
-                      : 'bg-white border border-[#ded3be] text-stone-700 hover:bg-[#faf6ee]'
-                  }`}
-                >
-                  Bank / Current A/C Journal
-                </button>
-              </div>
-
-              <div className="relative min-w-[220px]">
-                <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Filter category or description..."
-                  className="w-full pl-9 pr-3 py-1.5 bg-white border border-[#ded3be] rounded-xl text-xs font-medium text-stone-800 focus:outline-none focus:border-amber-600 shadow-xs"
-                />
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#fcf9f2] text-amber-950 font-bold uppercase tracking-wider border-b border-[#ece3d4]">
-                  <tr>
-                    <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3">Type</th>
-                    <th className="px-4 py-3">Category</th>
-                    <th className="px-4 py-3">Particulars & Remarks</th>
-                    <th className="px-4 py-3">V.No</th>
-                    <th className="px-4 py-3 text-right">Amount (₹)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#ece3d4]">
-                  {isJournalLoading ? (
-                    <tr><td colSpan={6} className="text-center py-8 text-stone-400">Loading journal ledger...</td></tr>
-                  ) : (journalData?.transactions || []).length > 0 ? (
-                    journalData.transactions.map((t: any) => (
-                      <tr key={t._id} className="hover:bg-[#faf6ee] transition">
-                        <td className="px-4 py-3 font-mono font-bold text-stone-800">
-                          {new Date(t.transactionDate).toLocaleDateString('en-GB')}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
-                            t.type === 'CREDIT' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
-                          }`}>
-                            {t.type}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-semibold text-stone-900">{t.category}</td>
-                        <td className="px-4 py-3 text-stone-600 font-medium">{t.notes || t.description || '-'}</td>
-                        <td className="px-4 py-3 font-mono text-stone-500">{t.vNo || '-'}</td>
-                        <td className={`px-4 py-3 text-right font-black text-sm ${t.type === 'CREDIT' ? 'text-emerald-700' : 'text-rose-700'}`}>
-                          {t.type === 'CREDIT' ? '+' : '-'}₹{t.amount?.toLocaleString('en-IN')}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={6} className="text-center py-8 text-stone-400 font-medium">
-                        No transactions found for the selected filter.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Manual Entry Modal */}
       {isEntryModalOpen && (

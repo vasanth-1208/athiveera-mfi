@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* Athiveera Signature Gold & Burnished Copper Monogram Palette */
   --color-brand-50: #fffbeb;
@@ -81,6 +83,309 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: #b5a494;
+}
+
+/* ======================================================== */
+/* ATHIVEERA DARK THEME PALETTE & GLOBAL ADAPTATION         */
+/* ======================================================== */
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark body {
+  background-color: #170f09 !important;
+  color: #ffffff !important;
+}
+
+/* Enforce high contrast text on dark mode content */
+html.dark,
+html.dark body,
+html.dark p:not([class*="text-emerald-"]):not([class*="text-rose-"]):not([class*="text-sky-"]):not([class*="text-teal-"]):not([class*="text-purple-"]),
+html.dark span:not([class*="text-emerald-"]):not([class*="text-rose-"]):not([class*="text-sky-"]):not([class*="text-teal-"]):not([class*="text-purple-"]),
+html.dark h1,
+html.dark h2,
+html.dark h3,
+html.dark h4,
+html.dark h5,
+html.dark h6,
+html.dark label,
+html.dark strong,
+html.dark b,
+html.dark em,
+html.dark th,
+html.dark td,
+html.dark div:not([class*="text-emerald-"]):not([class*="text-rose-"]):not([class*="text-sky-"]):not([class*="text-teal-"]),
+html.dark a,
+html.dark button:not([class*="text-emerald-"]):not([class*="text-rose-"]),
+html.dark .text-stone-950,
+html.dark .text-stone-900,
+html.dark .text-stone-800,
+html.dark .text-stone-700,
+html.dark .text-stone-600,
+html.dark .text-slate-950,
+html.dark .text-slate-900,
+html.dark .text-slate-800,
+html.dark .text-slate-700,
+html.dark .text-slate-600,
+html.dark .text-gray-950,
+html.dark .text-gray-900,
+html.dark .text-gray-800,
+html.dark .text-gray-700,
+html.dark .text-gray-600,
+html.dark .text-zinc-950,
+html.dark .text-zinc-900,
+html.dark .text-zinc-800,
+html.dark .text-zinc-700,
+html.dark .text-zinc-600,
+html.dark .text-amber-950,
+html.dark .text-amber-900,
+html.dark .text-amber-800,
+html.dark .text-amber-950\/80,
+html.dark .text-amber-900\/80 {
+  color: #ffffff;
+}
+
+html.dark .text-stone-500,
+html.dark .text-stone-400,
+html.dark .text-slate-500,
+html.dark .text-slate-400,
+html.dark .text-gray-500,
+html.dark .text-gray-400,
+html.dark .text-zinc-500,
+html.dark .text-zinc-400 {
+  color: #d6cbbe !important;
+}
+
+html.dark .text-amber-700,
+html.dark .text-amber-600,
+html.dark .text-amber-500,
+html.dark .text-brand-700,
+html.dark .text-brand-600 {
+  color: #fbbf24 !important;
+}
+
+html.dark .text-emerald-700,
+html.dark .text-emerald-800 {
+  color: #34d399 !important;
+}
+
+html.dark .text-rose-700,
+html.dark .text-rose-800 {
+  color: #fb7185 !important;
+}
+
+/* Dark brown surface overrides for cards, tables, panels across all pages */
+html.dark .bg-\[\#fffdfa\],
+html.dark .bg-\[\#fbf9f5\],
+html.dark .bg-\[\#ffffff\],
+html.dark .bg-\[\#fdfbf7\],
+html.dark .bg-white {
+  background-color: #23160e !important;
+}
+
+html.dark .bg-\[\#f6f0e4\],
+html.dark .bg-\[\#f9f5ed\],
+html.dark .bg-\[\#faf6ee\],
+html.dark .bg-\[\#ece3d4\],
+html.dark .bg-\[\#fbf7f0\],
+html.dark .bg-\[\#fcf9f2\],
+html.dark .bg-\[\#eae0d0\],
+html.dark .bg-\[\#ede3d0\],
+html.dark .bg-\[\#ede3d0\]\/60,
+html.dark .bg-stone-50,
+html.dark .bg-stone-100,
+html.dark .bg-slate-50,
+html.dark .bg-slate-100,
+html.dark .bg-gray-50,
+html.dark .bg-gray-100,
+html.dark .bg-zinc-50,
+html.dark .bg-zinc-100 {
+  background-color: #2c1c12 !important;
+}
+
+html.dark .border-\[\#ece3d4\],
+html.dark .border-\[\#ded3be\],
+html.dark .border-\[\#e5dcce\],
+html.dark .border-\[\#eae0d0\],
+html.dark .border-\[\#f4ede1\],
+html.dark .border-stone-100,
+html.dark .border-stone-200,
+html.dark .border-stone-300,
+html.dark .border-slate-100,
+html.dark .border-slate-200,
+html.dark .border-slate-300,
+html.dark .border-gray-100,
+html.dark .border-gray-200,
+html.dark .border-gray-300,
+html.dark .border-zinc-200,
+html.dark .border-zinc-300 {
+  border-color: #442a1b !important;
+}
+
+html.dark input:not([type="checkbox"]):not([type="radio"]),
+html.dark select,
+html.dark textarea {
+  background-color: #2c1c12 !important;
+  color: #ffffff !important;
+  border-color: #442a1b !important;
+}
+
+html.dark input:focus,
+html.dark select:focus,
+html.dark textarea:focus {
+  border-color: #d97706 !important;
+  outline: none;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #170f09;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #442a1b;
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #5c3924;
+}
+
+/* Dark mode for tables across all pages */
+table thead th {
+  border-bottom: 1px solid #ded3be;
+}
+
+html.dark table thead th {
+  border-bottom: 1px solid #442a1b !important;
+}
+
+html.dark table thead,
+html.dark table thead th,
+html.dark table thead tr {
+  background-color: #2c1c12 !important;
+  color: #ffffff !important;
+  border-color: #442a1b !important;
+}
+
+html.dark table tfoot,
+html.dark table tfoot td,
+html.dark table tfoot tr {
+  background-color: #2c1c12 !important;
+  border-color: #442a1b !important;
+  color: #ffffff !important;
+}
+
+html.dark table tbody tr {
+  background-color: #23160e !important;
+  border-top: none !important;
+  border-bottom: none !important;
+}
+
+html.dark table tbody td {
+  color: #ffffff !important;
+  border-top: none !important;
+  border-bottom: none !important;
+}
+
+/* Eliminate horizontal divider lines between table body rows across light & dark mode */
+table tbody tr,
+table tbody td,
+table tbody.divide-y > :not([hidden]) ~ :not([hidden]),
+html.dark table tbody.divide-y > :not([hidden]) ~ :not([hidden]),
+.divide-\[\#ece3d4\] > tr ~ tr,
+.divide-\[\#ded3be\] > tr ~ tr,
+html.dark .divide-\[\#ece3d4\] > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-\[\#ded3be\] > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-stone-200 > :not([hidden]) ~ :not([hidden]) {
+  border-top-width: 0 !important;
+  border-bottom-width: 0 !important;
+  border-top-color: transparent !important;
+  border-bottom-color: transparent !important;
+}
+
+html.dark table tbody tr:hover,
+html.dark table tr.hover\:bg-\[\#faf6ee\]:hover,
+html.dark table tr.hover\:bg-amber-50\/40:hover,
+html.dark table tr.hover\:bg-slate-50\/80:hover,
+html.dark table tr.hover\:bg-slate-50:hover,
+html.dark table tr.hover\:bg-rose-50\/30:hover {
+  background-color: #2c1c12 !important;
+}
+
+/* Translucent tinted badge & alert styles in dark mode */
+html.dark .bg-emerald-100,
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-100\/70 {
+  background-color: rgba(16, 185, 129, 0.2) !important;
+  color: #34d399 !important;
+  border-color: rgba(16, 185, 129, 0.4) !important;
+}
+
+html.dark .bg-rose-100,
+html.dark .bg-rose-50,
+html.dark .bg-rose-100\/70 {
+  background-color: rgba(244, 63, 94, 0.2) !important;
+  color: #fb7185 !important;
+  border-color: rgba(244, 63, 94, 0.4) !important;
+}
+
+html.dark .bg-amber-100,
+html.dark .bg-amber-50,
+html.dark .bg-amber-100\/70,
+html.dark .bg-amber-50\/80,
+html.dark .bg-yellow-50,
+html.dark .bg-yellow-100 {
+  background-color: rgba(245, 158, 11, 0.2) !important;
+  color: #fbbf24 !important;
+  border-color: rgba(245, 158, 11, 0.4) !important;
+}
+
+html.dark .bg-sky-100,
+html.dark .bg-sky-50,
+html.dark .bg-blue-100,
+html.dark .bg-blue-50 {
+  background-color: rgba(14, 165, 233, 0.2) !important;
+  color: #38bdf8 !important;
+  border-color: rgba(14, 165, 233, 0.4) !important;
+}
+
+html.dark .bg-purple-100,
+html.dark .bg-purple-50 {
+  background-color: rgba(168, 85, 247, 0.2) !important;
+  color: #c084fc !important;
+  border-color: rgba(168, 85, 247, 0.4) !important;
+}
+
+html.dark .bg-teal-100,
+html.dark .bg-teal-50 {
+  background-color: rgba(20, 184, 166, 0.2) !important;
+  color: #2dd4bf !important;
+  border-color: rgba(20, 184, 166, 0.4) !important;
+}
+
+/* Settled & Closed Badges in Dark Mode */
+html.dark .bg-stone-200 {
+  background-color: rgba(120, 113, 108, 0.35) !important;
+  color: #f5f5f4 !important;
+  border-color: rgba(168, 162, 158, 0.45) !important;
+}
+
+html.dark kbd {
+  background-color: #442a1b !important;
+  color: #fbbf24 !important;
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 12s linear infinite;
 }
 
 /* Print styling for receipts and reports */

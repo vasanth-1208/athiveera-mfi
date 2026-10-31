@@ -21,10 +21,13 @@ router.get('/', async (req: Request, res: Response) => {
       query.role = req.query.role;
     }
 
-    if (req.query.status) {
-      query.status = req.query.status;
-    } else if (req.query.role === 'COLLECTION_STAFF') {
-      query.status = { $ne: 'INACTIVE' };
+    if (req.query.includeInactive === 'true') {
+      if (req.query.active !== undefined) {
+        query.active = req.query.active === 'true';
+      }
+    } else {
+      // By default: ONLY active staff are returned anywhere across any tab or dropdown
+      query.active = true;
     }
 
     const users = await User.find(query).select('-passwordHash').populate('branchId').sort({ name: 1 });

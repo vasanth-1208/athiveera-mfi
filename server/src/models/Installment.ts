@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type InstallmentStatus = 'PENDING' | 'PARTIAL' | 'PAID' | 'OVERDUE' | 'WAIVED';
+export type InstallmentStatus = 'PENDING' | 'PARTIAL' | 'PAID' | 'OVERDUE' | 'WAIVED' | 'DISCOUNT' | 'BAD_DEBT';
 
 export interface IInstallment extends Document {
   loanId: mongoose.Types.ObjectId;
@@ -40,7 +40,7 @@ const InstallmentSchema: Schema = new Schema(
     balanceAmount: { type: Number, required: true },
     status: { 
       type: String, 
-      enum: ['PENDING', 'PARTIAL', 'PAID', 'OVERDUE', 'WAIVED'], 
+      enum: ['PENDING', 'PARTIAL', 'PAID', 'OVERDUE', 'WAIVED', 'DISCOUNT', 'BAD_DEBT'], 
       default: 'PENDING' 
     },
     paidDate: { type: Date, default: null },

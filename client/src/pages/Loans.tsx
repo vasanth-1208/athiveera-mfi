@@ -13,6 +13,7 @@ import {
   UserCheck,
   FileCheck2,
   AlertCircle,
+  AlertTriangle,
   CreditCard,
   User,
   Check,
@@ -34,9 +35,10 @@ import {
   Users,
   ChevronDown,
   ChevronUp,
+  ArrowUp,
+  ArrowDown,
   Eye,
-  EyeOff,
-  Coins
+  EyeOff
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -171,6 +173,10 @@ export const Loans: React.FC = () => {
     loanNumber: '',
     loanCategory: 'REGULAR' as 'REGULAR' | 'SPECIAL',
     frequency: 'WEEKLY' as 'WEEKLY' | 'MONTHLY',
+    monthlyScheduleType: 'DATE_OF_MONTH' as 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN',
+    monthlyDayOfMonth: 5,
+    monthlyWeekOrdinal: 2,
+    monthlyWeekday: 'FRIDAY',
     year: new Date().getFullYear(),
     month: new Date().toLocaleString('default', { month: 'long' }),
     loanDate: new Date().toISOString().split('T')[0],
@@ -183,6 +189,12 @@ export const Loans: React.FC = () => {
     weeksAmountSplit: [] as WeekAmortization[],
     enquiryId: ''
   });
+
+  const [kycDuplicateWarning, setKycDuplicateWarning] = useState<{
+    field: string;
+    value: string;
+    customer: any;
+  } | null>(null);
 
   // Queries
   const { data: loansData, isLoading } = useQuery({
@@ -219,7 +231,7 @@ export const Loans: React.FC = () => {
   const rawLoans = loansData?.loans || [];
   const customers = customersData?.customers || [];
   const groups = groupsData?.groups || [];
-  const staffUsers = (staffUsersData?.users || []).filter((u: any) => u.status !== 'INACTIVE');
+  const staffUsers = (staffUsersData?.users || []).filter((u: any) => u.active !== false && u.status !== 'INACTIVE');
   const presets: LoanProductPreset[] = presetsData?.presets || [];
 
   // Filtered and Sorted Loans: Closed loans ALWAYS at bottom
@@ -251,6 +263,10 @@ export const Loans: React.FC = () => {
       switch (sortBy) {
         case 'oldest':
           return new Date(a.loanDate || a.createdAt).getTime() - new Date(b.loanDate || b.createdAt).getTime();
+        case 'loanNumber_asc':
+          return (a.loanNumber || '').localeCompare(b.loanNumber || '');
+        case 'loanNumber_desc':
+          return (b.loanNumber || '').localeCompare(a.loanNumber || '');
         case 'name_asc':
           return (a.customerId?.name || a.customerName || '').localeCompare(b.customerId?.name || b.customerName || '');
         case 'name_desc':
@@ -259,16 +275,28 @@ export const Loans: React.FC = () => {
           return (b.principal || 0) - (a.principal || 0);
         case 'amount_asc':
           return (a.principal || 0) - (b.principal || 0);
+        case 'total_desc':
+          return (b.totalPayable || 0) - (a.totalPayable || 0);
+        case 'total_asc':
+          return (a.totalPayable || 0) - (b.totalPayable || 0);
         case 'balance_desc':
           return (b.outstandingTotal || 0) - (a.outstandingTotal || 0);
         case 'balance_asc':
           return (a.outstandingTotal || 0) - (b.outstandingTotal || 0);
+        case 'status_asc':
+          return (a.status || '').localeCompare(b.status || '');
+        case 'status_desc':
+          return (b.status || '').localeCompare(a.status || '');
         case 'newest':
         default:
           return new Date(b.loanDate || b.createdAt).getTime() - new Date(a.loanDate || a.createdAt).getTime();
       }
     });
   }, [rawLoans, selectedDayFilter, sortBy]);
+
+  const handleToggleSort = (ascKey: string, descKey: string) => {
+    setSortBy(prev => prev === ascKey ? descKey : ascKey);
+  };
 
   const loans = visibleLoans;
 
@@ -316,6 +344,45 @@ export const Loans: React.FC = () => {
 
     return Array.from(map.values());
   }, [loans]);
+
+  const [grpSortKey, setGrpSortKey] = useState<string>('groupCode');
+  const [grpSortDir, setGrpSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const handleToggleGrpSort = (key: string) => {
+    if (grpSortKey === key) {
+      setGrpSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setGrpSortKey(key);
+      setGrpSortDir('asc');
+    }
+  };
+
+  const sortedGroupedLoans = React.useMemo(() => {
+    const list = [...groupedLoans];
+    list.sort((a: any, b: any) => {
+      let comp = 0;
+      if (grpSortKey === 'groupCode') {
+        const numA = parseInt(String(a.groupCode).replace(/\D/g, '')) || 0;
+        const numB = parseInt(String(b.groupCode).replace(/\D/g, '')) || 0;
+        if (numA !== numB) comp = numA - numB;
+        else comp = String(a.groupName).localeCompare(String(b.groupName));
+      } else if (grpSortKey === 'collectionDay') {
+        comp = String(a.collectionDay).localeCompare(String(b.collectionDay));
+      } else if (grpSortKey === 'area') {
+        comp = String(a.area).localeCompare(String(b.area));
+      } else if (grpSortKey === 'staffName') {
+        comp = String(a.staffName).localeCompare(String(b.staffName));
+      } else if (grpSortKey === 'activeLoans') {
+        comp = a.loans.length - b.loans.length;
+      } else if (grpSortKey === 'totalPrincipal') {
+        comp = a.totalPrincipal - b.totalPrincipal;
+      } else if (grpSortKey === 'totalOutstanding') {
+        comp = a.totalOutstanding - b.totalOutstanding;
+      }
+      return grpSortDir === 'asc' ? comp : -comp;
+    });
+    return list;
+  }, [groupedLoans, grpSortKey, grpSortDir]);
 
   const isGroupFullySelected = (grp: any) => grp.loans.length > 0 && grp.loans.every((l: any) => selectedLoanIds.includes(l._id));
   const isGroupPartiallySelected = (grp: any) => grp.loans.some((l: any) => selectedLoanIds.includes(l._id)) && !isGroupFullySelected(grp);
@@ -561,6 +628,45 @@ export const Loans: React.FC = () => {
     }));
   };
 
+  const handleFrequencyChange = (newFreq: 'WEEKLY' | 'MONTHLY') => {
+    if (newFreq === 'MONTHLY') {
+      const monthlyPreset = presets.find(p => p.frequency === 'MONTHLY') || presets.find(p => p.code.startsWith('MONTHLY'));
+      if (monthlyPreset) {
+        handleSelectPreset(monthlyPreset.code);
+      } else {
+        setManagerLoanForm(prev => ({ ...prev, frequency: 'MONTHLY' }));
+      }
+    } else {
+      const weeklyPreset = presets.find(p => p.code === 'TIER_20K_32W') || presets.find(p => p.frequency === 'WEEKLY') || presets[0];
+      if (weeklyPreset) {
+        handleSelectPreset(weeklyPreset.code);
+      } else {
+        setManagerLoanForm(prev => ({ ...prev, frequency: 'WEEKLY' }));
+      }
+    }
+  };
+
+  const checkDuplicateKYC = (field: string, val: string) => {
+    if (!val || val.trim().length < 3) {
+      setKycDuplicateWarning(null);
+      return;
+    }
+    const cleanVal = val.trim();
+    api.checkCustomerDuplicate({ [field]: cleanVal })
+      .then((res: any) => {
+        if (res?.exists && res?.customer) {
+          setKycDuplicateWarning({
+            field: res.matchedField,
+            value: res.matchedValue || cleanVal,
+            customer: res.customer
+          });
+        } else {
+          setKycDuplicateWarning(prev => (prev?.value === cleanVal ? null : prev));
+        }
+      })
+      .catch(() => {});
+  };
+
   const handleSlabChange = (index: number, field: keyof AmortizationSlab, value: number) => {
     setSlabs(prevSlabs => {
       const newSlabs = prevSlabs.map((s, i) => {
@@ -650,8 +756,12 @@ export const Loans: React.FC = () => {
     });
   };
 
-  const handleCustomerSelect = (custId: string) => {
-    const cust = customers.find((c: any) => c._id === custId);
+  const handleCustomerSelect = (customerOrId: any) => {
+    setKycDuplicateWarning(null);
+    const cust = typeof customerOrId === 'object' && customerOrId !== null
+      ? customerOrId
+      : customers.find((c: any) => c._id === customerOrId);
+
     if (cust) {
       setManagerLoanForm(prev => ({
         ...prev,
@@ -903,7 +1013,10 @@ export const Loans: React.FC = () => {
     });
   };
 
-  const filterTabs = ['ALL', 'ACTIVE', 'OVERDUE', 'CLOSED', 'SETTLED'];
+  const filterTabs = ['ALL', 'ACTIVE', 'OVERDUE', 'BAD_DEBT', 'CLOSED', 'SETTLED'];
+  const isOverdueTab = statusFilter === 'OVERDUE';
+  const isPaidTab = statusFilter === 'SETTLED' || statusFilter === 'CLOSED';
+  const hasExtraColumn = isOverdueTab || isPaidTab;
 
   return (
     <div className="space-y-6">
@@ -969,7 +1082,8 @@ export const Loans: React.FC = () => {
                 }`}
               >
                 {st === 'PENDING_VERIFICATION' ? 'Pending KYC Verification' :
-                 st === 'VERIFIED' ? 'KYC Verified' : st}
+                 st === 'VERIFIED' ? 'KYC Verified' :
+                 st === 'SETTLED' ? 'SETTLED / PAID' : st}
               </button>
             ))}
           </div>
@@ -994,7 +1108,7 @@ export const Loans: React.FC = () => {
               <Calendar className="w-3.5 h-3.5 text-amber-700" />
               <span>Route Day:</span>
             </span>
-            {['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY'].map((df) => (
+            {['ALL', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'].map((df) => (
               <button
                 key={df}
                 onClick={() => setSelectedDayFilter(df)}
@@ -1091,19 +1205,80 @@ export const Loans: React.FC = () => {
                     />
                   </th>
                 )}
-                <th className="px-4 py-3">Loan Account #</th>
-                <th className="px-4 py-3">Borrower / Group</th>
-                <th className="px-4 py-3">Principal Amount</th>
-                <th className="px-4 py-3">Total Contractual</th>
-                <th className="px-4 py-3">Assigned Staff</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3 cursor-pointer select-none border-b border-[#ded3be] dark:border-[#442a1b]" onClick={() => handleToggleSort('loanNumber_asc', 'loanNumber_desc')}>
+                  <div className="flex items-center gap-1">
+                    <span>Loan Account #</span>
+                    {sortBy === 'loanNumber_asc' ? (
+                      <ArrowUp className="w-3 h-3 text-amber-700" />
+                    ) : sortBy === 'loanNumber_desc' ? (
+                      <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none border-b border-[#ded3be] dark:border-[#442a1b]" onClick={() => handleToggleSort('name_asc', 'name_desc')}>
+                  <div className="flex items-center gap-1">
+                    <span>Borrower / Group</span>
+                    {sortBy === 'name_asc' ? (
+                      <ArrowUp className="w-3 h-3 text-amber-700" />
+                    ) : sortBy === 'name_desc' ? (
+                      <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none border-b border-[#ded3be] dark:border-[#442a1b]" onClick={() => handleToggleSort('amount_asc', 'amount_desc')}>
+                  <div className="flex items-center gap-1">
+                    <span>Principal Amount</span>
+                    {sortBy === 'amount_asc' ? (
+                      <ArrowUp className="w-3 h-3 text-amber-700" />
+                    ) : sortBy === 'amount_desc' ? (
+                      <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 cursor-pointer select-none border-b border-[#ded3be] dark:border-[#442a1b]" onClick={() => handleToggleSort('total_asc', 'total_desc')}>
+                  <div className="flex items-center gap-1">
+                    <span>Total Contractual</span>
+                    {sortBy === 'total_asc' ? (
+                      <ArrowUp className="w-3 h-3 text-amber-700" />
+                    ) : sortBy === 'total_desc' ? (
+                      <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                {isOverdueTab && (
+                  <th className="px-4 py-3 text-rose-950 font-black border-b border-[#ded3be] dark:border-[#442a1b]">Overdue Amount</th>
+                )}
+                {isPaidTab && (
+                  <th className="px-4 py-3 text-emerald-950 font-black border-b border-[#ded3be] dark:border-[#442a1b]">Paid Amount</th>
+                )}
+                <th className="px-4 py-3 border-b border-[#ded3be] dark:border-[#442a1b]">Assigned Staff</th>
+                <th className="px-4 py-3 cursor-pointer select-none border-b border-[#ded3be] dark:border-[#442a1b]" onClick={() => handleToggleSort('status_asc', 'status_desc')}>
+                  <div className="flex items-center gap-1">
+                    <span>Status</span>
+                    {sortBy === 'status_asc' ? (
+                      <ArrowUp className="w-3 h-3 text-amber-700" />
+                    ) : sortBy === 'status_desc' ? (
+                      <ArrowDown className="w-3 h-3 text-amber-700" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 opacity-30 hover:opacity-100" />
+                    )}
+                  </div>
+                </th>
+                <th className="px-4 py-3 text-right border-b border-[#ded3be] dark:border-[#442a1b]">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#ece3d4]">
+            <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={isManagerOrAdmin ? 8 : 7} className="text-center py-12 text-stone-400 font-medium">
+                  <td colSpan={(isManagerOrAdmin ? 8 : 7) + (hasExtraColumn ? 1 : 0)} className="text-center py-12 text-stone-400 font-medium">
                     Loading loan applications and assigned records...
                   </td>
                 </tr>
@@ -1176,12 +1351,34 @@ export const Loans: React.FC = () => {
                       {/* Total Contractual */}
                       <td className="px-4 py-3.5">
                         <span className="font-bold text-amber-900 text-sm">₹{l.totalPayable?.toLocaleString('en-IN')}</span>
-                        {l.status === 'ACTIVE' && (
-                          <span className="text-[10px] text-emerald-700 block font-semibold">
-                            Paid: ₹{l.totalPaid?.toLocaleString('en-IN')}
-                          </span>
-                        )}
+                        <span className="text-[10px] text-emerald-700 block font-semibold">
+                          Paid: ₹{(l.totalPaid || 0).toLocaleString('en-IN')}
+                        </span>
                       </td>
+
+                      {/* Overdue Amount Column */}
+                      {isOverdueTab && (
+                        <td className="px-4 py-3.5">
+                          <span className="font-bold text-rose-700 text-sm">
+                            ₹{(l.outstandingTotal ?? Math.max(0, (l.totalPayable || 0) - (l.totalPaid || 0))).toLocaleString('en-IN')}
+                          </span>
+                          <span className="text-[10px] text-stone-500 block">
+                            {l.overdueWeeks ? `${l.overdueWeeks} wks overdue` : 'Pending Due'}
+                          </span>
+                        </td>
+                      )}
+
+                      {/* Paid Amount Column */}
+                      {isPaidTab && (
+                        <td className="px-4 py-3.5">
+                          <span className="font-bold text-emerald-800 text-sm">
+                            ₹{(l.totalPaid || l.totalPayable || 0).toLocaleString('en-IN')}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 block">
+                            Fully Settled
+                          </span>
+                        </td>
+                      )}
 
                       {/* Assigned Staff */}
                       <td className="px-4 py-3.5">
@@ -1223,6 +1420,7 @@ export const Loans: React.FC = () => {
                       <td className="px-4 py-3.5">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold ${
                           l.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                          l.status === 'BAD_DEBT' ? 'bg-purple-100 text-purple-900 border border-purple-300 font-bold' :
                           l.status === 'CLOSED' || l.status === 'SETTLED' ? 'bg-stone-200 text-stone-800 border border-stone-300' :
                           l.status === 'OVERDUE' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
                           'bg-amber-100 text-amber-800 border border-amber-300'
@@ -1244,15 +1442,6 @@ export const Loans: React.FC = () => {
                               <span>Decide</span>
                             </button>
                           )}
-
-                          <button
-                            onClick={() => setViewingLoanCollectionsId(l._id)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-bold rounded-lg text-xs border border-emerald-300 transition cursor-pointer"
-                            title="View Repayment Collections History"
-                          >
-                            <Coins className="w-3.5 h-3.5 text-emerald-700" />
-                            <span>Collections</span>
-                          </button>
 
                           <Link
                             to={`/loans/${l._id}`}
@@ -1291,7 +1480,7 @@ export const Loans: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-stone-400 font-medium">
+                  <td colSpan={(isManagerOrAdmin ? 8 : 7) + (hasExtraColumn ? 1 : 0)} className="text-center py-12 text-stone-400 font-medium">
                     {isStaff
                       ? 'No field loan verifications currently assigned to you.'
                       : 'No loan applications found matching this filter.'}
@@ -1322,25 +1511,88 @@ export const Loans: React.FC = () => {
                       />
                     </th>
                   )}
-                  <th className="px-4 py-3">Group Code & Name</th>
-                  <th className="px-4 py-3">Route Day</th>
-                  <th className="px-4 py-3">Area</th>
-                  <th className="px-4 py-3">Assigned Staff</th>
-                  <th className="px-4 py-3">Active Loans</th>
-                  <th className="px-4 py-3">Total Portfolio</th>
-                  <th className="px-4 py-3">Balance Outstanding</th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('groupCode')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Group Code & Name</span>
+                      {grpSortKey === 'groupCode' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('collectionDay')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Route Day</span>
+                      {grpSortKey === 'collectionDay' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('area')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Area</span>
+                      {grpSortKey === 'area' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('staffName')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Assigned Staff</span>
+                      {grpSortKey === 'staffName' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('activeLoans')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Active Loans</span>
+                      {grpSortKey === 'activeLoans' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('totalPrincipal')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Total Portfolio</span>
+                      {grpSortKey === 'totalPrincipal' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleToggleGrpSort('totalOutstanding')}>
+                    <div className="flex items-center gap-1.5 hover:text-amber-700 transition">
+                      <span>Balance Outstanding</span>
+                      {grpSortKey === 'totalOutstanding' ? (
+                        grpSortDir === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-amber-600" /> : <ArrowDown className="w-3.5 h-3.5 text-amber-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-stone-400 opacity-60" />
+                      )}
+                    </div>
+                  </th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#ece3d4]">
+              <tbody>
                 {isLoading ? (
                   <tr>
                     <td colSpan={isManagerOrAdmin ? 9 : 8} className="text-center py-12 text-stone-400 font-medium">
                       Loading groups and route assignments...
                     </td>
                   </tr>
-                ) : groupedLoans.length > 0 ? (
-                  groupedLoans.map((grp: any) => {
+                ) : sortedGroupedLoans.length > 0 ? (
+                  sortedGroupedLoans.map((grp: any) => {
                     const isFullySel = isGroupFullySelected(grp);
                     const isPartSel = isGroupPartiallySelected(grp);
                     const isExpanded = expandedGroupIds.includes(grp.groupId);
@@ -1460,7 +1712,7 @@ export const Loans: React.FC = () => {
                                       <th className="px-3 py-2">Status</th>
                                     </tr>
                                   </thead>
-                                  <tbody className="divide-y divide-[#ece3d4]">
+                                  <tbody>
                                     {grp.loans.map((ml: any) => (
                                       <tr key={ml._id} className="hover:bg-[#faf6ee] transition">
                                         <td className="px-3 py-2 text-center">
@@ -2009,20 +2261,22 @@ export const Loans: React.FC = () => {
                 </Link>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {presets.map((p) => (
-                  <button
-                    key={p.code}
-                    type="button"
-                    onClick={() => handleSelectPreset(p.code)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                      managerLoanForm.selectedPresetCode === p.code
-                        ? 'bg-gradient-to-r from-amber-600 to-yellow-600 text-stone-950 shadow-md font-black'
-                        : 'bg-[#1e1610] text-stone-300 hover:text-amber-200 border border-amber-950/60'
-                    }`}
-                  >
-                    {p.name.replace(' Loan', '').replace('Regular', '')}
-                  </button>
-                ))}
+                {presets
+                  .filter(p => managerLoanForm.frequency === 'MONTHLY' ? p.frequency === 'MONTHLY' : p.frequency !== 'MONTHLY')
+                  .map((p) => (
+                    <button
+                      key={p.code}
+                      type="button"
+                      onClick={() => handleSelectPreset(p.code)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        managerLoanForm.selectedPresetCode === p.code
+                          ? 'bg-gradient-to-r from-amber-600 to-yellow-600 text-stone-950 shadow-md font-black'
+                          : 'bg-[#1e1610] text-stone-300 hover:text-amber-200 border border-amber-950/60'
+                      }`}
+                    >
+                      {p.name.replace(' Loan', '').replace('Regular', '')}
+                    </button>
+                  ))}
                 <button
                   type="button"
                   onClick={() => handleSelectPreset('CUSTOM')}
@@ -2163,7 +2417,10 @@ export const Loans: React.FC = () => {
                       type="tel"
                       placeholder="10-digit mobile"
                       value={managerLoanForm.customerPhone}
-                      onChange={(e) => setManagerLoanForm({ ...managerLoanForm, customerPhone: e.target.value })}
+                      onChange={(e) => {
+                        setManagerLoanForm({ ...managerLoanForm, customerPhone: e.target.value });
+                        checkDuplicateKYC('phone', e.target.value);
+                      }}
                       className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
                     />
                   </div>
@@ -2246,7 +2503,10 @@ export const Loans: React.FC = () => {
                         type="text"
                         placeholder="e.g. 33/G/1234567"
                         value={managerLoanForm.smartCardNumber}
-                        onChange={(e) => setManagerLoanForm({ ...managerLoanForm, smartCardNumber: e.target.value })}
+                        onChange={(e) => {
+                          setManagerLoanForm({ ...managerLoanForm, smartCardNumber: e.target.value.toUpperCase() });
+                          checkDuplicateKYC('smartCardNumber', e.target.value);
+                        }}
                         className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 font-mono font-bold"
                       />
                     </div>
@@ -2260,7 +2520,10 @@ export const Loans: React.FC = () => {
                         maxLength={14}
                         placeholder="12-digit Aadhaar"
                         value={managerLoanForm.aadharNumber}
-                        onChange={(e) => setManagerLoanForm({ ...managerLoanForm, aadharNumber: e.target.value })}
+                        onChange={(e) => {
+                          setManagerLoanForm({ ...managerLoanForm, aadharNumber: e.target.value });
+                          checkDuplicateKYC('aadharNumber', e.target.value);
+                        }}
                         className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 font-mono font-bold"
                       />
                     </div>
@@ -2273,7 +2536,10 @@ export const Loans: React.FC = () => {
                         type="text"
                         placeholder="e.g. TN/12/345/678901"
                         value={managerLoanForm.voterIdNumber}
-                        onChange={(e) => setManagerLoanForm({ ...managerLoanForm, voterIdNumber: e.target.value })}
+                        onChange={(e) => {
+                          setManagerLoanForm({ ...managerLoanForm, voterIdNumber: e.target.value.toUpperCase() });
+                          checkDuplicateKYC('voterIdNumber', e.target.value);
+                        }}
                         className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 font-mono font-bold uppercase"
                       />
                     </div>
@@ -2287,11 +2553,48 @@ export const Loans: React.FC = () => {
                         maxLength={10}
                         placeholder="e.g. ABCDE1234F"
                         value={managerLoanForm.panNumber}
-                        onChange={(e) => setManagerLoanForm({ ...managerLoanForm, panNumber: e.target.value.toUpperCase() })}
+                        onChange={(e) => {
+                          setManagerLoanForm({ ...managerLoanForm, panNumber: e.target.value.toUpperCase() });
+                          checkDuplicateKYC('panNumber', e.target.value);
+                        }}
                         className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 font-mono font-bold uppercase"
                       />
                     </div>
                   </div>
+
+                  {/* Real-time Duplicate Customer Alert Banner */}
+                  {kycDuplicateWarning && (
+                    <div className="mt-3 p-3 bg-rose-950/70 border-2 border-rose-500 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-rose-200 text-xs shadow-lg shadow-rose-950/50 animate-pulse">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-black text-rose-300 text-sm tracking-wide">
+                            ⚠️ EXISTING BORROWER DETECTED ({kycDuplicateWarning.field}: {kycDuplicateWarning.value})
+                          </p>
+                          <p className="text-xs text-rose-100 mt-0.5">
+                            Already registered as: <strong>{kycDuplicateWarning.customer.name}</strong> (CUS ID: <strong>{kycDuplicateWarning.customer.customerId}</strong> • Area: {kycDuplicateWarning.customer.area || 'N/A'} • Branch: {kycDuplicateWarning.customer.branchName || 'N/A'})
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleCustomerSelect(kycDuplicateWarning.customer)}
+                          className="px-3 py-1.5 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-black rounded-lg text-xs shadow-md transition cursor-pointer flex items-center gap-1.5"
+                        >
+                          <span>Autofill & Link Borrower</span>
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setKycDuplicateWarning(null)}
+                          className="px-2 py-1 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-lg text-[11px] cursor-pointer"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2434,6 +2737,7 @@ export const Loans: React.FC = () => {
                       <option value="THURSDAY">THURSDAY</option>
                       <option value="FRIDAY">FRIDAY</option>
                       <option value="SATURDAY">SATURDAY</option>
+                      <option value="SUNDAY">SUNDAY</option>
                     </select>
                   </div>
                 </div>
@@ -2482,7 +2786,7 @@ export const Loans: React.FC = () => {
                     </label>
                     <select
                       value={managerLoanForm.frequency}
-                      onChange={(e) => setManagerLoanForm({ ...managerLoanForm, frequency: e.target.value as any })}
+                      onChange={(e) => handleFrequencyChange(e.target.value as any)}
                       className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-500 font-bold"
                     >
                       <option value="WEEKLY">WEEKLY</option>
@@ -2523,6 +2827,97 @@ export const Loans: React.FC = () => {
                     />
                   </div>
                 </div>
+
+                {/* Monthly Collection Due Scheduling Configuration Bar */}
+                {managerLoanForm.frequency === 'MONTHLY' && (
+                  <div className="mt-3 p-3 bg-amber-950/40 border border-amber-600/50 rounded-xl space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-950/60 pb-2">
+                      <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
+                        <Calendar className="w-4 h-4 text-amber-400" />
+                        <span>Monthly Collection Due Scheduling Configuration</span>
+                      </span>
+                      <span className="text-[10px] text-amber-200/90 bg-amber-900/50 px-2.5 py-0.5 rounded-full border border-amber-700/60 font-mono font-bold">
+                        {managerLoanForm.monthlyScheduleType === 'DATE_OF_MONTH'
+                          ? `Due on ${managerLoanForm.monthlyDayOfMonth}th of each month`
+                          : `Due on ${['1st', '2nd', '3rd', '4th', '5th'][managerLoanForm.monthlyWeekOrdinal - 1] || '2nd'} ${managerLoanForm.monthlyWeekday} of each month`}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-bold text-amber-200 uppercase tracking-wider mb-1">
+                          Scheduling Mode
+                        </label>
+                        <select
+                          value={managerLoanForm.monthlyScheduleType}
+                          onChange={(e) => setManagerLoanForm({ ...managerLoanForm, monthlyScheduleType: e.target.value as any })}
+                          className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-500 font-bold"
+                        >
+                          <option value="DATE_OF_MONTH">Particular Date of the Month (Common)</option>
+                          <option value="DAY_OF_WEEK_PATTERN">Day with Count of Week (e.g. 2nd Friday)</option>
+                        </select>
+                      </div>
+
+                      {managerLoanForm.monthlyScheduleType === 'DATE_OF_MONTH' ? (
+                        <div className="sm:col-span-2">
+                          <label className="block text-[10px] font-bold text-amber-200 uppercase tracking-wider mb-1">
+                            Due Date of Month (1 - 31)
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="31"
+                              value={managerLoanForm.monthlyDayOfMonth}
+                              onChange={(e) => setManagerLoanForm({ ...managerLoanForm, monthlyDayOfMonth: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })}
+                              className="w-20 bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-200 font-black text-center focus:outline-none focus:border-amber-500 font-mono"
+                            />
+                            <span className="text-[11px] text-stone-300">
+                              Monthly installment falls on the <strong>{managerLoanForm.monthlyDayOfMonth}th</strong> of every calendar month.
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <label className="block text-[10px] font-bold text-amber-200 uppercase tracking-wider mb-1">
+                              Week Count (Ordinal)
+                            </label>
+                            <select
+                              value={managerLoanForm.monthlyWeekOrdinal}
+                              onChange={(e) => setManagerLoanForm({ ...managerLoanForm, monthlyWeekOrdinal: parseInt(e.target.value) || 1 })}
+                              className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-500 font-bold"
+                            >
+                              <option value="1">1st Week</option>
+                              <option value="2">2nd Week</option>
+                              <option value="3">3rd Week</option>
+                              <option value="4">4th Week</option>
+                              <option value="5">5th / Last Week</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-amber-200 uppercase tracking-wider mb-1">
+                              Collection Day
+                            </label>
+                            <select
+                              value={managerLoanForm.monthlyWeekday}
+                              onChange={(e) => setManagerLoanForm({ ...managerLoanForm, monthlyWeekday: e.target.value })}
+                              className="w-full bg-[#1e1610] border border-amber-950/80 rounded-xl px-3 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-500 font-bold"
+                            >
+                              <option value="MONDAY">MONDAY</option>
+                              <option value="TUESDAY">TUESDAY</option>
+                              <option value="WEDNESDAY">WEDNESDAY</option>
+                              <option value="THURSDAY">THURSDAY</option>
+                              <option value="FRIDAY">FRIDAY</option>
+                              <option value="SATURDAY">SATURDAY</option>
+                              <option value="SUNDAY">SUNDAY</option>
+                            </select>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* SECTION 4: Financial Details */}
@@ -2574,13 +2969,13 @@ export const Loans: React.FC = () => {
 
                   <div>
                     <label className="block text-[10px] font-bold text-amber-200 uppercase tracking-wider mb-1">
-                      No of Weeks (no of weeks) <span className="text-rose-400">*</span>
+                      {managerLoanForm.frequency === 'MONTHLY' ? 'No of Months (tenure months)' : 'No of Weeks (no of weeks)'} <span className="text-rose-400">*</span>
                     </label>
                     <input
                       type="number"
                       required
                       min="1"
-                      max="104"
+                      max={managerLoanForm.frequency === 'MONTHLY' ? 60 : 104}
                       value={managerLoanForm.noOfWeeks}
                       onChange={(e) => {
                         const wks = parseInt(e.target.value) || 1;
@@ -2601,10 +2996,12 @@ export const Loans: React.FC = () => {
                   <div>
                     <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
                       <Calculator className="w-4 h-4 text-amber-400" />
-                      <span>Weeks Amount Split (Amortization Schedule)</span>
+                      <span>{managerLoanForm.frequency === 'MONTHLY' ? 'Months Amount Split (Amortization Schedule)' : 'Weeks Amount Split (Amortization Schedule)'}</span>
                     </span>
                     <p className="text-[10px] text-stone-400 mt-0.5">
-                      Prefixed week slabs (e.g. Weeks 1 to 10). Typing any slab amount updates all weeks in that range automatically.
+                      {managerLoanForm.frequency === 'MONTHLY'
+                        ? 'Prefixed month slabs (e.g. Month 1 to 12). Typing any slab amount updates all months in that range automatically.'
+                        : 'Prefixed week slabs (e.g. Weeks 1 to 10). Typing any slab amount updates all weeks in that range automatically.'}
                     </p>
                   </div>
 
@@ -2639,17 +3036,17 @@ export const Loans: React.FC = () => {
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="bg-[#1e1610] text-[10px] font-bold text-amber-300 uppercase tracking-wider border-b border-amber-950/80">
-                        <th className="py-2.5 px-3">Week Range</th>
-                        <th className="py-2.5 px-2 text-center">Weeks</th>
-                        <th className="py-2.5 px-2 text-right">Principal (₹/wk)</th>
-                        <th className="py-2.5 px-2 text-right">Interest (₹/wk)</th>
-                        <th className="py-2.5 px-2 text-right">Savings (₹/wk)</th>
-                        <th className="py-2.5 px-2 text-right">Weekly Due (₹/wk)</th>
+                        <th className="py-2.5 px-3">{managerLoanForm.frequency === 'MONTHLY' ? 'Month Range' : 'Week Range'}</th>
+                        <th className="py-2.5 px-2 text-center">{managerLoanForm.frequency === 'MONTHLY' ? 'Months' : 'Weeks'}</th>
+                        <th className="py-2.5 px-2 text-right">{managerLoanForm.frequency === 'MONTHLY' ? 'Principal (₹/mo)' : 'Principal (₹/wk)'}</th>
+                        <th className="py-2.5 px-2 text-right">{managerLoanForm.frequency === 'MONTHLY' ? 'Interest (₹/mo)' : 'Interest (₹/wk)'}</th>
+                        <th className="py-2.5 px-2 text-right">{managerLoanForm.frequency === 'MONTHLY' ? 'Savings (₹/mo)' : 'Savings (₹/wk)'}</th>
+                        <th className="py-2.5 px-2 text-right">{managerLoanForm.frequency === 'MONTHLY' ? 'Monthly Due (₹/mo)' : 'Weekly Due (₹/wk)'}</th>
                         <th className="py-2.5 px-3 text-right">Range Total (₹)</th>
                         <th className="py-2.5 px-2 text-center">Action</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-amber-950/50">
+                    <tbody>
                       {slabs.map((slab, idx) => {
                         const weeksCount = Math.max(1, slab.toWeek - slab.fromWeek + 1);
                         const rangeTotal = weeksCount * slab.total;
@@ -2657,7 +3054,7 @@ export const Loans: React.FC = () => {
                           <tr key={idx} className="hover:bg-amber-950/20 transition">
                             <td className="py-2 px-3 font-semibold text-amber-200">
                               <div className="flex items-center gap-1 font-mono text-xs">
-                                <span>Week</span>
+                                <span>{managerLoanForm.frequency === 'MONTHLY' ? 'Month' : 'Week'}</span>
                                 <input
                                   type="number"
                                   min="1"
@@ -2676,7 +3073,7 @@ export const Loans: React.FC = () => {
                               </div>
                             </td>
                             <td className="py-2 px-2 text-center font-mono text-stone-300">
-                              {weeksCount} wks
+                              {weeksCount} {managerLoanForm.frequency === 'MONTHLY' ? 'mos' : 'wks'}
                             </td>
                             <td className="py-2 px-2 text-right">
                               <input
@@ -2733,7 +3130,7 @@ export const Loans: React.FC = () => {
                       <tr className="bg-[#1e1610] border-t-2 border-amber-800/80 font-bold text-xs text-amber-200">
                         <td className="py-2.5 px-3 uppercase tracking-wider text-amber-400">Total</td>
                         <td className="py-2.5 px-2 text-center font-mono">
-                          {slabs.reduce((sum, s) => sum + (s.toWeek - s.fromWeek + 1), 0)} wks
+                          {slabs.reduce((sum, s) => sum + (s.toWeek - s.fromWeek + 1), 0)} {managerLoanForm.frequency === 'MONTHLY' ? 'mos' : 'wks'}
                         </td>
                         <td className="py-2.5 px-2 text-right font-mono">
                           ₹{slabs.reduce((sum, s) => sum + (s.principal * (s.toWeek - s.fromWeek + 1)), 0).toLocaleString('en-IN')}
@@ -2766,7 +3163,7 @@ export const Loans: React.FC = () => {
                     <span>Add Slab Range</span>
                   </button>
                   <span className="text-[10px] text-stone-400 font-medium">
-                    Total tenure: {managerLoanForm.noOfWeeks} weeks • Installments will be automatically expanded for collection ledger.
+                    Total tenure: {managerLoanForm.noOfWeeks} {managerLoanForm.frequency === 'MONTHLY' ? 'months' : 'weeks'} • Installments will be automatically expanded for collection ledger.
                   </span>
                 </div>
               </div>
@@ -2890,6 +3287,7 @@ export const Loans: React.FC = () => {
                     >
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="OVERDUE">OVERDUE</option>
+                      <option value="BAD_DEBT">BAD_DEBT</option>
                       <option value="CLOSED">CLOSED</option>
                       <option value="SETTLED">SETTLED</option>
                       <option value="SUBMITTED">SUBMITTED</option>
@@ -2910,6 +3308,7 @@ export const Loans: React.FC = () => {
                       <option value="THURSDAY">THURSDAY</option>
                       <option value="FRIDAY">FRIDAY</option>
                       <option value="SATURDAY">SATURDAY</option>
+                      <option value="SUNDAY">SUNDAY</option>
                     </select>
                   </div>
 
@@ -3205,7 +3604,7 @@ export const Loans: React.FC = () => {
                     <th className="px-4 py-2.5">Notes / Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#ece3d4]">
+                <tbody>
                   {isModalLoanLoading ? (
                     <tr>
                       <td colSpan={6} className="text-center py-8 text-stone-400">Loading repayment receipts...</td>

@@ -188,10 +188,30 @@ router.post('/follow-up', async (req: Request, res: Response) => {
     }
     
     // Set status
-    if (status === 'RESOLVED' || (followUp.actualPending === 0 && payAmt > 0)) {
+    if (status === 'BAD_DEBT') {
+      followUp.status = 'BAD_DEBT';
+      if (loan) {
+        loan.status = 'BAD_DEBT';
+        await loan.save();
+        await Installment.updateMany(
+          { loanId: loan._id, status: { $in: ['OVERDUE', 'PENDING', 'PARTIAL'] } },
+          { $set: { status: 'BAD_DEBT' } }
+        );
+      }
+    } else if (status === 'RESOLVED' || (followUp.actualPending === 0 && payAmt > 0)) {
       followUp.status = 'RESOLVED';
     } else if (status === 'PARTIAL' || (payAmt > 0 && followUp.actualPending > 0)) {
       followUp.status = 'PARTIAL';
+    } else if (status === 'OVERDUE') {
+      followUp.status = 'OVERDUE';
+      if (loan && loan.status === 'BAD_DEBT') {
+        loan.status = 'OVERDUE';
+        await loan.save();
+        await Installment.updateMany(
+          { loanId: loan._id, status: 'BAD_DEBT' },
+          { $set: { status: 'OVERDUE' } }
+        );
+      }
     } else {
       followUp.status = 'PENDING';
     }
@@ -200,7 +220,9 @@ router.post('/follow-up', async (req: Request, res: Response) => {
       date: new Date(),
       remarks: remarks + (payAmt > 0 ? ` (Collected ₹${payAmt})` : ''),
       staffName: req.user?.name || 'Staff',
-      actionTaken: payAmt > 0 ? `Collected ₹${payAmt} on field recovery` : (actionTaken || 'Follow-up visit')
+      actionTaken: payAmt > 0 
+        ? `Collected ₹${payAmt} on field recovery` 
+        : (actionTaken || (status === 'BAD_DEBT' ? 'Moved account to Bad Debts' : 'Follow-up visit'))
     });
 
     await followUp.save();

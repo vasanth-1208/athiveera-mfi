@@ -52,7 +52,7 @@ export interface Customer {
   createdAt: string;
 }
 
-export type Weekday = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY';
+export type Weekday = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY';
 
 export interface Group {
   _id: string;
@@ -81,7 +81,8 @@ export type LoanStatus =
   | 'ACTIVE' 
   | 'OVERDUE' 
   | 'CLOSED' 
-  | 'SETTLED';
+  | 'SETTLED'
+  | 'BAD_DEBT';
 
 export interface LoanVerification {
   smartCardNumber?: string;
@@ -123,6 +124,10 @@ export interface LoanProductPreset {
   savingsAmount: number;
   totalPayable: number;
   tenureWeeks: number;
+  monthlyScheduleType?: 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN';
+  monthlyDayOfMonth?: number;
+  monthlyWeekOrdinal?: number;
+  monthlyWeekday?: string;
   slabs?: AmortizationSlab[];
   schedule: WeekAmortization[];
 }
@@ -143,6 +148,10 @@ export interface Loan {
   totalPayable: number;
   tenureWeeks: number;
   repaymentFrequency: string;
+  monthlyScheduleType?: 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN';
+  monthlyDayOfMonth?: number;
+  monthlyWeekOrdinal?: number;
+  monthlyWeekday?: string;
   disbursedDate: string;
   status: LoanStatus;
   assignedStaffId?: any;

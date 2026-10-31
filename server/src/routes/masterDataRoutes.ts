@@ -5,6 +5,7 @@ import { Loan } from '../models/Loan';
 import { Installment } from '../models/Installment';
 import { Group } from '../models/Group';
 import { Payment } from '../models/Payment';
+import { FollowUp } from '../models/FollowUp';
 import { authenticate } from '../middleware/auth';
 import { requireRole } from '../middleware/roles';
 import { parseExcelDate } from '../services/importService';
@@ -16,20 +17,30 @@ router.use(authenticate);
 // Overall Database Stats
 router.get('/stats', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
   try {
-    const totalCustomers = await Customer.countDocuments();
-    const activeCustomers = await Customer.countDocuments({ status: 'ACTIVE' });
+    const { branchId } = req.query;
+    const query: any = {};
+    if (req.user?.role !== 'MAIN_ADMIN') {
+      query.branchId = req.user?.branchId;
+    } else if (branchId && branchId !== 'ALL' && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
+      query.branchId = branchId;
+    }
 
-    const totalLoans = await Loan.countDocuments();
-    const activeLoans = await Loan.countDocuments({ status: { $in: ['ACTIVE', 'OVERDUE'] } });
-    const closedLoans = await Loan.countDocuments({ status: 'CLOSED' });
-    const settledLoans = await Loan.countDocuments({ status: 'SETTLED' });
+    const totalCustomers = await Customer.countDocuments(query);
+    const activeCustomers = await Customer.countDocuments({ ...query, status: 'ACTIVE' });
 
-    const totalGroups = await Group.countDocuments();
-    const totalInstallments = await Installment.countDocuments();
-    const totalPayments = await Payment.countDocuments();
+    const totalLoans = await Loan.countDocuments(query);
+    const activeLoans = await Loan.countDocuments({ ...query, status: { $in: ['ACTIVE', 'OVERDUE'] } });
+    const closedLoans = await Loan.countDocuments({ ...query, status: 'CLOSED' });
+    const settledLoans = await Loan.countDocuments({ ...query, status: 'SETTLED' });
+
+    const totalGroups = await Group.countDocuments(query);
+    const totalInstallments = await Installment.countDocuments(query.branchId ? { branchId: query.branchId } : {});
+    const totalPayments = await Payment.countDocuments(query.branchId ? { branchId: query.branchId } : {});
 
     // Financial totals across all loans
+    const matchStage = query.branchId ? [{ $match: { branchId: new mongoose.Types.ObjectId(String(query.branchId)) } }] : [];
     const loanAgg = await Loan.aggregate([
+      ...matchStage,
       {
         $group: {
           _id: null,
@@ -73,10 +84,16 @@ router.get('/stats', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Re
 
 router.get('/customers', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
   try {
-    const { search, area, status, page = 1, limit = 50, sortBy = 'id_asc' } = req.query;
+    const { search, area, status, branchId, page = 1, limit = 50, sortBy = 'id_asc' } = req.query;
     const query: any = {};
 
-    if (area) query.area = area;
+    if (req.user?.role !== 'MAIN_ADMIN') {
+      query.branchId = req.user?.branchId;
+    } else if (branchId && branchId !== 'ALL' && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
+      query.branchId = branchId;
+    }
+
+    if (area && area !== 'ALL') query.area = area;
     if (status) query.status = status;
 
     if (search) {
@@ -317,8 +334,14 @@ router.post('/customers/auto-deduplicate', requireRole('MAIN_ADMIN'), async (req
 
 router.get('/loans', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
   try {
-    const { search, groupId, routeDay, status, page = 1, limit = 50 } = req.query;
+    const { search, groupId, routeDay, status, branchId, page = 1, limit = 50 } = req.query;
     const query: any = {};
+
+    if (req.user?.role !== 'MAIN_ADMIN') {
+      query.branchId = req.user?.branchId;
+    } else if (branchId && branchId !== 'ALL' && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
+      query.branchId = branchId;
+    }
 
     if (groupId) query.groupId = groupId;
     if (status && status !== 'ALL') query.status = status;
@@ -520,6 +543,38 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
           ]
         });
       }
+
+      // Sync FollowUp status and balance for this loan
+      const overdueInsts = await Installment.find({
+        loanId: loan._id,
+        $or: [
+          { status: 'OVERDUE' },
+          { balanceAmount: { $gt: 0 }, dueDate: { $lt: new Date() } }
+        ]
+      });
+      const curOverdue = overdueInsts.reduce((sum, item) => sum + (item.balanceAmount || 0), 0);
+      if (curOverdue > 0) {
+        await FollowUp.findOneAndUpdate(
+          { loanId: loan._id },
+          {
+            $set: {
+              actualPending: curOverdue,
+              overdueWeeks: overdueInsts.length,
+              status: 'PENDING'
+            }
+          }
+        );
+      } else {
+        await FollowUp.findOneAndUpdate(
+          { loanId: loan._id },
+          {
+            $set: {
+              actualPending: 0,
+              status: 'RESOLVED'
+            }
+          }
+        );
+      }
     }
 
     res.json({ success: true, installment: inst, message: 'Installment updated successfully' });
@@ -564,8 +619,14 @@ router.post('/loans/:id/realign-schedule-dates', requireRole('MAIN_ADMIN', 'BRAN
 
 router.get('/groups', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
   try {
-    const { search, collectionDay } = req.query;
+    const { search, collectionDay, branchId } = req.query;
     const query: any = {};
+
+    if (req.user?.role !== 'MAIN_ADMIN') {
+      query.branchId = req.user?.branchId;
+    } else if (branchId && branchId !== 'ALL' && branchId !== 'undefined' && branchId !== 'null' && branchId !== '') {
+      query.branchId = branchId;
+    }
 
     if (collectionDay && collectionDay !== 'ALL') query.collectionDay = collectionDay;
 

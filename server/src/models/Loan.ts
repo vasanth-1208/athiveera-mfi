@@ -11,7 +11,8 @@ export type LoanStatus =
   | 'ACTIVE' 
   | 'OVERDUE' 
   | 'CLOSED' 
-  | 'SETTLED';
+  | 'SETTLED'
+  | 'BAD_DEBT';
 
 export interface ILoanVerification {
   smartCardNumber: string;
@@ -74,6 +75,10 @@ export interface ILoan extends Document {
     savings: number;
     total: number;
   }>;
+  monthlyScheduleType?: 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN';
+  monthlyDayOfMonth?: number;
+  monthlyWeekOrdinal?: number;
+  monthlyWeekday?: string;
   outstandingPrincipal: number;
   outstandingInterest: number;
   outstandingTotal: number;
@@ -112,7 +117,7 @@ const LoanSchema: Schema = new Schema(
     disbursedDate: { type: Date, default: Date.now },
     status: { 
       type: String, 
-      enum: ['DRAFT', 'SUBMITTED', 'PENDING_VERIFICATION', 'VERIFIED', 'APPROVED', 'REJECTED', 'DISBURSED', 'ACTIVE', 'OVERDUE', 'CLOSED', 'SETTLED'], 
+      enum: ['DRAFT', 'SUBMITTED', 'PENDING_VERIFICATION', 'VERIFIED', 'APPROVED', 'REJECTED', 'DISBURSED', 'ACTIVE', 'OVERDUE', 'CLOSED', 'SETTLED', 'BAD_DEBT'], 
       default: 'ACTIVE' 
     },
     assignedStaffId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
@@ -159,6 +164,10 @@ const LoanSchema: Schema = new Schema(
         total: { type: Number, required: true }
       }
     ],
+    monthlyScheduleType: { type: String, enum: ['DATE_OF_MONTH', 'DAY_OF_WEEK_PATTERN'], default: 'DATE_OF_MONTH' },
+    monthlyDayOfMonth: { type: Number, default: 5 },
+    monthlyWeekOrdinal: { type: Number, default: 2 },
+    monthlyWeekday: { type: String, default: 'FRIDAY' },
     outstandingPrincipal: { type: Number, default: 0 },
     outstandingInterest: { type: Number, default: 0 },
     outstandingTotal: { type: Number, default: 0 },

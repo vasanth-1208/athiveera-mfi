@@ -9,6 +9,8 @@ export interface ScheduleItem {
   allocatedSavings: number;
 }
 
+export type WeekdayName = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY';
+
 export interface LoanCalculationInput {
   principal: number;
   productType?: string;
@@ -17,7 +19,12 @@ export interface LoanCalculationInput {
   savingsAmount?: number;
   tenureWeeks?: number;
   startDate: Date;
-  collectionDay?: 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY';
+  collectionDay?: WeekdayName | string;
+  frequency?: 'WEEKLY' | 'MONTHLY' | 'DAILY' | string;
+  monthlyScheduleType?: 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN';
+  monthlyDayOfMonth?: number;
+  monthlyWeekOrdinal?: number;
+  monthlyWeekday?: string;
 }
 
 export interface LoanCalculationResult {
@@ -66,6 +73,55 @@ export function getNextWeekdayDate(startDate: Date, targetDay?: string): Date {
   return date;
 }
 
+export function getNthWeekdayOfMonth(year: number, month: number, weekdayName: string, ordinal: number): Date {
+  const dayIdx = WEEKDAY_INDEX[weekdayName.toUpperCase().trim()] ?? 5; // default Friday
+  const firstOfMonth = new Date(Date.UTC(year, month, 1, 12, 0, 0));
+  const firstDayOfWeek = firstOfMonth.getUTCDay();
+  let dayOffset = dayIdx - firstDayOfWeek;
+  if (dayOffset < 0) dayOffset += 7;
+
+  let targetDay = 1 + dayOffset + ((ordinal - 1) * 7);
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+
+  if (targetDay > daysInMonth) {
+    targetDay -= 7;
+  }
+
+  return new Date(Date.UTC(year, month, targetDay, 12, 0, 0));
+}
+
+export function calculateInstallmentDueDate(
+  loanDate: Date,
+  installmentIndex: number, // 0-based
+  frequency: 'WEEKLY' | 'MONTHLY' | 'DAILY' | string = 'WEEKLY',
+  collectionDay?: string,
+  monthlyScheduleType: 'DATE_OF_MONTH' | 'DAY_OF_WEEK_PATTERN' = 'DATE_OF_MONTH',
+  monthlyDayOfMonth: number = 5,
+  monthlyWeekOrdinal: number = 2,
+  monthlyWeekday: string = 'FRIDAY'
+): Date {
+  if (frequency === 'WEEKLY') {
+    const firstDueDate = getNextWeekdayDate(loanDate, collectionDay || 'MONDAY');
+    const d = new Date(firstDueDate);
+    d.setUTCDate(firstDueDate.getUTCDate() + (installmentIndex * 7));
+    return d;
+  }
+
+  // MONTHLY
+  const start = new Date(loanDate);
+  const targetMonthIndex = start.getUTCMonth() + installmentIndex + 1;
+  const targetYear = start.getUTCFullYear() + Math.floor(targetMonthIndex / 12);
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+
+  if (monthlyScheduleType === 'DAY_OF_WEEK_PATTERN') {
+    return getNthWeekdayOfMonth(targetYear, targetMonth, monthlyWeekday || 'FRIDAY', monthlyWeekOrdinal || 2);
+  } else {
+    const daysInMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+    const clampedDay = Math.min(daysInMonth, Math.max(1, monthlyDayOfMonth || 5));
+    return new Date(Date.UTC(targetYear, targetMonth, clampedDay, 12, 0, 0));
+  }
+}
+
 export function calculateLoanSchedule(input: LoanCalculationInput): LoanCalculationResult {
   const { principal, startDate, collectionDay } = input;
   let productType = input.productType || 'CUSTOM';
@@ -101,8 +157,16 @@ export function calculateLoanSchedule(input: LoanCalculationInput): LoanCalculat
 
     for (let i = 0; i < matchingPreset.schedule.length; i++) {
       const item = matchingPreset.schedule[i];
-      const currentDueDate = new Date(firstDueDate);
-      currentDueDate.setDate(firstDueDate.getDate() + (i * 7));
+      const currentDueDate = calculateInstallmentDueDate(
+        startDate,
+        i,
+        input.frequency || (matchingPreset.frequency as any) || 'WEEKLY',
+        collectionDay,
+        input.monthlyScheduleType,
+        input.monthlyDayOfMonth,
+        input.monthlyWeekOrdinal,
+        input.monthlyWeekday
+      );
 
       schedule.push({
         installmentNumber: item.week,
@@ -148,8 +212,16 @@ export function calculateLoanSchedule(input: LoanCalculationInput): LoanCalculat
   const interestRatio = interestAmount / totalPayable;
 
   for (let i = 0; i < weeklyInstallments.length; i++) {
-    const currentDueDate = new Date(firstDueDate);
-    currentDueDate.setUTCDate(firstDueDate.getUTCDate() + (i * 7));
+    const currentDueDate = calculateInstallmentDueDate(
+      startDate,
+      i,
+      input.frequency || 'WEEKLY',
+      collectionDay,
+      input.monthlyScheduleType,
+      input.monthlyDayOfMonth,
+      input.monthlyWeekOrdinal,
+      input.monthlyWeekday
+    );
 
     const expAmt = weeklyInstallments[i];
     const allocP = Math.round(expAmt * principalRatio);

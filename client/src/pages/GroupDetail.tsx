@@ -174,7 +174,9 @@ export const GroupDetail: React.FC = () => {
               Group #{group.groupCode} &bull; Cycle {group.cycle} {group.cycle === 1 ? '(Fresh)' : '(Renewal)'}
             </span>
             <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
-              group.status === 'LIVE' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-stone-100 text-stone-600 border border-stone-300'
+              group.status === 'LIVE' 
+                ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800/60' 
+                : 'bg-stone-200 dark:bg-stone-800/60 text-stone-800 dark:text-stone-300 border border-stone-300 dark:border-stone-700'
             }`}>
               {group.status}
             </span>
@@ -372,6 +374,7 @@ export const GroupDetail: React.FC = () => {
                     <option value="THURSDAY">THURSDAY</option>
                     <option value="FRIDAY">FRIDAY</option>
                     <option value="SATURDAY">SATURDAY</option>
+                    <option value="SUNDAY">SUNDAY</option>
                   </select>
                 </div>
 

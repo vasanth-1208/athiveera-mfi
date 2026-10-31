@@ -98,6 +98,7 @@ export const api = {
   // Customers
   getCustomers: (params?: any) => apiRequest(`/customers${cleanQuery(params)}`),
   getCustomer: (id: string) => apiRequest(`/customers/${id}`),
+  checkCustomerDuplicate: (params?: any) => apiRequest(`/customers/check-duplicate${cleanQuery(params)}`),
   createCustomer: (data: any) => apiRequest('/customers', { method: 'POST', body: JSON.stringify(data) }),
   updateCustomer: (id: string, data: any) => apiRequest(`/customers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCustomer: (id: string) => apiRequest(`/customers/${id}`, { method: 'DELETE' }),
@@ -151,6 +152,7 @@ export const api = {
   getDailySheet: (params?: any) => apiRequest(`/collections/daily-sheet${cleanQuery(params)}`),
   getWeeklySheet: (params?: any) => apiRequest(`/collections/weekly-sheet${cleanQuery(params)}`),
   getStaffCollections: (params?: any) => apiRequest(`/collections/staff-summary${cleanQuery(params)}`),
+  getStaffList: (params?: any) => apiRequest(`/collections/staff-list${cleanQuery(params)}`),
   recordCollection: (data: any) => apiRequest('/collections/record', { method: 'POST', body: JSON.stringify(data) }),
   recordGroupCollection: (data: any) => apiRequest('/collections/record-group', { method: 'POST', body: JSON.stringify(data) }),
   getReceipt: (receiptNumber: string) => apiRequest(`/collections/receipt/${receiptNumber}`),
@@ -202,7 +204,7 @@ export const api = {
   updateSettings: (data: any) => apiRequest('/settings', { method: 'PUT', body: JSON.stringify(data) }),
 
   // Master Database & Ledger Management
-  getMasterDataStats: () => apiRequest('/master-data/stats'),
+  getMasterDataStats: (params?: any) => apiRequest(`/master-data/stats${cleanQuery(params)}`),
   getMasterCustomers: (params?: any) => apiRequest(`/master-data/customers${cleanQuery(params)}`),
   updateMasterCustomer: (id: string, data: any) => apiRequest(`/master-data/customers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   mergeCustomers: (data: { sourceCustomerId: string; targetCustomerId: string }) => apiRequest('/master-data/customers/merge', { method: 'POST', body: JSON.stringify(data) }),
