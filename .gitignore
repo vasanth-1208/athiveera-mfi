@@ -20,12 +20,19 @@ client/.env
 
 # Temporary / Scratch scripts & inspection logs
 scratch/
-scripts/*.txt
+scripts/
+server/scripts/
 *.log
 npm-debug.log*
-yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Sensitive baseline / business records
+server/src/services/ledgerBaselineData.json
+
+# Deployment overrides
+netlify.toml
+client/public/_redirects
 
 # Excel workbooks & source spreadsheets
 *.xlsx

@@ -8,10 +8,16 @@ import { Denomination } from '../models/Denomination';
 import { recordCashbookEntry } from '../services/cashbookService';
 import { authenticate } from '../middleware/auth';
 import { enforceBranchScope, requireRole } from '../middleware/roles';
-import ledgerBaselineData from '../services/ledgerBaselineData.json';
+
+let baselineMap: Record<string, any> = {};
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  baselineMap = require('../services/ledgerBaselineData.json');
+} catch {
+  baselineMap = {};
+}
 
 const router = Router();
-const baselineMap: Record<string, any> = ledgerBaselineData;
 
 // Helper to calculate previous day date string (YYYY-MM-DD)
 const getPreviousDateKey = (dateKey: string): string => {
