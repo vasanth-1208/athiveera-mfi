@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, User, AlertCircle, ArrowRight, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { isPwa } from '../utils/authStorage';
 
 export const Login: React.FC = () => {
   const [username, setUsername] = useState('');
@@ -12,6 +13,7 @@ export const Login: React.FC = () => {
   const [error, setError] = useState('');
   const { login } = useAuth();
   const navigate = useNavigate();
+  const isPwaApp = isPwa();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,9 +21,13 @@ export const Login: React.FC = () => {
     setLoading(true);
 
     try {
-      const res = await api.login({ username: username.trim(), password });
+      const res = await api.login({
+        username: username.trim(),
+        password,
+        clientType: isPwaApp ? 'PWA' : 'BROWSER'
+      });
       if (res.success && res.token && res.user) {
-        login(res.token, res.user);
+        login(res.token, res.user, isPwaApp);
         navigate('/');
       } else {
         setError(res.message || 'Login failed. Please check your credentials.');
@@ -122,8 +128,14 @@ export const Login: React.FC = () => {
           </button>
         </form>
 
-        <div className="pt-2 text-center relative z-10 border-t border-amber-900/30">
-          <p className="text-[11px] text-amber-200/40">
+        <div className="pt-2 text-center relative z-10 border-t border-amber-900/30 space-y-1">
+          <p className="text-[11px] text-amber-200/60 flex items-center justify-center gap-1.5 font-medium">
+            <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            {isPwaApp
+              ? 'PWA App Mode: 3-Day Persistent Session'
+              : 'Web Browser: 6h Session (Auto-Logout on Tab Close)'}
+          </p>
+          <p className="text-[10px] text-amber-200/40">
             Athiveera MFI Core Banking • Authorized Access Only
           </p>
         </div>

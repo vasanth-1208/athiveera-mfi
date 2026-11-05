@@ -192,6 +192,8 @@ function buildRouteMemberRows(
       customer: l.customerId,
       installmentNumber: instToDisplay?.installmentNumber || null,
       installmentId: instToDisplay?._id || null,
+      dueDate: instToDisplay?.dueDate || null,
+      paidDate: instToDisplay?.paidDate || null,
       installmentStatus: instStatus,
       isBadDebt,
       overdueWeeks,
@@ -315,10 +317,19 @@ router.get('/daily-sheet', async (req: Request, res: Response) => {
 
     const groupIds = groups.map(g => g._id);
 
-    // BATCH 1: Fetch all route payments for these groups on target date in a single query
+    // Target viewing day boundaries (in addition to route week schedule boundaries)
+    const targetDayStart = new Date(refDate);
+    targetDayStart.setUTCHours(0, 0, 0, 0);
+    const targetDayEnd = new Date(refDate);
+    targetDayEnd.setUTCHours(23, 59, 59, 999);
+
+    // BATCH 1: Fetch all route payments for these groups on route schedule or viewing date in a single query
     const allRoutePayments = await Payment.find({
       groupId: { $in: groupIds },
-      paymentDate: { $gte: startOfDay, $lte: endOfDay },
+      $or: [
+        { paymentDate: { $gte: startOfDay, $lte: endOfDay } },
+        { paymentDate: { $gte: targetDayStart, $lte: targetDayEnd } }
+      ],
       isReversed: false
     }).lean();
 
@@ -858,8 +869,14 @@ router.post('/record', async (req: Request, res: Response) => {
       return;
     }
 
-    // Physical cash collections recorded in real-time are credited to today's cashbook
-    const paymentDate = collectionDate ? new Date(collectionDate) : new Date();
+    // Target installment is matched against the route schedule, while physical cash is stamped on collectionDate
+    let paymentDate = new Date();
+    if (collectionDate) {
+      const parsedDate = new Date(String(collectionDate).includes('T') ? collectionDate : `${collectionDate}T12:00:00`);
+      if (!isNaN(parsedDate.getTime())) {
+        paymentDate = parsedDate;
+      }
+    }
 
     // Allocate payment across pending installments in sequence
     let pendingInstallments = await Installment.find({
@@ -888,9 +905,9 @@ router.post('/record', async (req: Request, res: Response) => {
       inst.balanceAmount -= allocateAmt;
       remainingToAllocate -= allocateAmt;
 
+      inst.paidDate = paymentDate;
       if (inst.balanceAmount <= 0) {
         inst.status = 'PAID';
-        inst.paidDate = paymentDate;
       } else {
         inst.status = 'PARTIAL';
       }
@@ -996,7 +1013,7 @@ router.post('/record', async (req: Request, res: Response) => {
 // Fast 1-click Collect Entire Group
 router.post('/record-group', async (req: Request, res: Response) => {
   try {
-    const { groupId, weekday, paymentMethod = 'CASH', remarks = 'Full group collection' } = req.body;
+    const { groupId, weekday, paymentMethod = 'CASH', remarks = 'Full group collection', collectionDate } = req.body;
     if (!groupId) {
       res.status(400).json({ success: false, message: 'Valid groupId is required' });
       return;
@@ -1011,8 +1028,14 @@ router.post('/record-group', async (req: Request, res: Response) => {
     const targetWeekday = weekday || grp.collectionDay || 'MONDAY';
     const routeInfo = getRouteDateForWeekday(targetWeekday);
     const { startOfDay, endOfDay } = routeInfo;
-    // Target installment is matched against the route schedule, but physical cash is received today
-    const paymentDate = new Date();
+    // Target installment is matched against the route schedule, while physical cash is stamped on collectionDate
+    let paymentDate = new Date();
+    if (collectionDate) {
+      const parsedDate = new Date(String(collectionDate).includes('T') ? collectionDate : `${collectionDate}T12:00:00`);
+      if (!isNaN(parsedDate.getTime())) {
+        paymentDate = parsedDate;
+      }
+    }
 
     const loans = await Loan.find({
       groupId: grp._id,
@@ -1049,9 +1072,9 @@ router.post('/record-group', async (req: Request, res: Response) => {
         inst.paidAmount += alloc;
         inst.balanceAmount -= alloc;
         remainingToAlloc -= alloc;
+        inst.paidDate = paymentDate;
         if (inst.balanceAmount <= 0) {
           inst.status = 'PAID';
-          inst.paidDate = paymentDate;
         } else {
           inst.status = 'PARTIAL';
         }

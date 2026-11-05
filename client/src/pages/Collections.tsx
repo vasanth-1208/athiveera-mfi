@@ -25,7 +25,8 @@ import {
   EyeOff, 
   Wallet, 
   Save, 
-  X
+  X,
+  Edit3
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
@@ -59,6 +60,48 @@ export const Collections: React.FC = () => {
   const todayWeekday = getTodayWeekday();
   const [selectedDay, setSelectedDay] = useState<string>(todayWeekday);
   const [selectedDate, setSelectedDate] = useState<string>(getTodayDateString());
+  const [entryCollectionDate, setEntryCollectionDate] = useState<string>(getTodayDateString());
+  const [modalCollectionDate, setModalCollectionDate] = useState<string>(getTodayDateString());
+
+  // Helper to synchronize date when day of the week is changed
+  const getDateForDayInSameWeek = (currentDateStr: string, targetDayName: string): string => {
+    const dayIndexMap: Record<string, number> = {
+      'SUNDAY': 0,
+      'MONDAY': 1,
+      'TUESDAY': 2,
+      'WEDNESDAY': 3,
+      'THURSDAY': 4,
+      'FRIDAY': 5,
+      'SATURDAY': 6
+    };
+    const targetDayIdx = dayIndexMap[targetDayName.toUpperCase()];
+    if (targetDayIdx === undefined) return currentDateStr;
+
+    const parts = currentDateStr.split('-');
+    const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    
+    // Calculate Monday as the start of the week (ISO week: Monday=1 ... Sunday=7)
+    const currentDayIdx = d.getDay();
+    const currentIsoDay = currentDayIdx === 0 ? 7 : currentDayIdx;
+    const targetIsoDay = targetDayIdx === 0 ? 7 : targetDayIdx;
+    
+    const diffDays = targetIsoDay - currentIsoDay;
+    d.setDate(d.getDate() + diffDays);
+    
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const handleDaySelect = (day: string) => {
+    setSelectedDay(day);
+    if (day !== 'WEEKLY') {
+      const newDate = getDateForDayInSameWeek(selectedDate, day);
+      setSelectedDate(newDate);
+      setDenomDate(newDate);
+    }
+  };
   const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [search, setSearch] = useState('');
   const [payingLoanId, setPayingLoanId] = useState<string | null>(null);
@@ -375,7 +418,8 @@ export const Collections: React.FC = () => {
       paymentMethod: 'CASH',
       remarks: `Full week ${member.installmentNumber || ''} payment`,
       weekday: selectedDay === 'WEEKLY' ? (member.collectionDay || todayWeekday) : selectedDay,
-      installmentId: member.installmentId
+      installmentId: member.installmentId,
+      collectionDate: entryCollectionDate
     });
   };
 
@@ -398,7 +442,8 @@ export const Collections: React.FC = () => {
       await api.recordGroupCollection({
         groupId: item.group?._id,
         weekday: selectedDay === 'WEEKLY' ? (item.collectionDay || todayWeekday) : selectedDay,
-        paymentMethod: 'CASH'
+        paymentMethod: 'CASH',
+        collectionDate: entryCollectionDate
       });
       queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
       queryClient.invalidateQueries({ queryKey: ['weeklySheet'] });
@@ -421,6 +466,7 @@ export const Collections: React.FC = () => {
     setPartialAmount(String(member.expectedAmount || ''));
     setPaymentMethod('CASH');
     setRemarks('');
+    setModalCollectionDate(entryCollectionDate);
     setIsPartialModalOpen(true);
   };
 
@@ -435,8 +481,24 @@ export const Collections: React.FC = () => {
       paymentMethod,
       remarks: remarks || (parsedAmt < partialMember.expectedAmount ? 'Partial payment received' : 'Full payment received'),
       weekday: selectedDay === 'WEEKLY' ? (partialMember.collectionDay || todayWeekday) : selectedDay,
-      installmentId: partialMember.installmentId
+      installmentId: partialMember.installmentId,
+      collectionDate: modalCollectionDate || entryCollectionDate
     });
+  };
+
+  const handlePromptEditCollectedDate = async (member: any) => {
+    const currentIso = member.paidDate ? new Date(member.paidDate).toISOString().split('T')[0] : getTodayDateString();
+    const newDateStr = window.prompt(`Edit collected date for ${member.customer?.name || 'Borrower'} (Week ${member.installmentNumber}):\nEnter format: YYYY-MM-DD`, currentIso);
+    if (!newDateStr || newDateStr.trim() === currentIso) return;
+    
+    try {
+      await api.updateMasterInstallment(member.installmentId, { paidDate: newDateStr.trim() });
+      queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
+      queryClient.invalidateQueries({ queryKey: ['weeklySheet'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboardMetrics'] });
+    } catch (err: any) {
+      alert(err.message || 'Failed to update collected date');
+    }
   };
 
   const isWeekly = selectedDay === 'WEEKLY' && isManagerOrAdmin;
@@ -528,13 +590,14 @@ export const Collections: React.FC = () => {
 
         {/* Action Buttons: Date Selector, Staff Denominations & Settled Groups Toggle */}
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Date Selector for Viewing Collections & Denominations for a Specific Date */}
+          {/* Date Selector for Viewing Collections & Denominations for a Specific Route Schedule Date */}
           <div className="flex items-center bg-white border border-[#ded3be] rounded-xl px-3 py-1.5 shadow-xs gap-2">
             <Calendar className="w-4 h-4 text-amber-700 shrink-0" />
-            <span className="text-[10px] font-black uppercase text-stone-500 hidden sm:inline">Date:</span>
+            <span className="text-[10px] font-black uppercase text-stone-500 hidden sm:inline" title="Route viewing date">Route Date:</span>
             <input
               type="date"
               value={selectedDate}
+              title="Filter route & scheduled installments by date"
               onChange={(e) => {
                 const newDate = e.target.value;
                 if (!newDate) return;
@@ -579,28 +642,93 @@ export const Collections: React.FC = () => {
             <span>{isCollectionStaff ? 'My Handover Denominations' : 'Staff Denominations'}</span>
           </button>
 
-          {/* Settled Groups Toggle Button */}
-          <button
-            type="button"
-            onClick={() => setShowCompletedGroups(prev => !prev)}
-            className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs border shrink-0 ${
-              showCompletedGroups
-                ? 'bg-[#251b14] text-amber-300 border-amber-800/60'
-                : 'bg-white text-stone-700 border-[#ded3be] hover:bg-[#faf6ee]'
-            }`}
-            title={showCompletedGroups ? "Hide settled groups (Closed groups shown at top)" : "Show settled groups (Closed groups currently hidden)"}
-          >
-            {showCompletedGroups ? <Eye className="w-3.5 h-3.5 text-amber-400" /> : <EyeOff className="w-3.5 h-3.5 text-stone-500" />}
-            <span className="hidden sm:inline">{showCompletedGroups ? 'Settled Groups (Shown)' : 'Settled Groups (Hidden)'}</span>
-            <span className="sm:hidden">Settled</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
-              showCompletedGroups ? 'bg-amber-400 text-stone-950' : 'bg-[#ece3d4] text-stone-700'
-            }`}>
-              {totalCompletedGroups}
+          {/* Settled Groups Toggle Button (Admin and Branch Manager only) */}
+          {isManagerOrAdmin && (
+            <button
+              type="button"
+              onClick={() => setShowCompletedGroups(prev => !prev)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs border shrink-0 ${
+                showCompletedGroups
+                  ? 'bg-[#251b14] text-amber-300 border-amber-800/60'
+                  : 'bg-white text-stone-700 border-[#ded3be] hover:bg-[#faf6ee]'
+              }`}
+              title={showCompletedGroups ? "Hide settled groups (Closed groups shown at top)" : "Show settled groups (Closed groups currently hidden)"}
+            >
+              {showCompletedGroups ? <Eye className="w-3.5 h-3.5 text-amber-400" /> : <EyeOff className="w-3.5 h-3.5 text-stone-500" />}
+              <span className="hidden sm:inline">{showCompletedGroups ? 'Settled Groups (Shown)' : 'Settled Groups (Hidden)'}</span>
+              <span className="sm:hidden">Settled</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                showCompletedGroups ? 'bg-amber-400 text-stone-950' : 'bg-[#ece3d4] text-stone-700'
+              }`}>
+                {totalCompletedGroups}
+              </span>
+            </button>
+          )}
+
+          {/* Edit Collection Date Button / Selector (Placed right to Settled Groups) */}
+          <div className={`flex items-center rounded-xl px-3 py-1.5 shadow-xs gap-2 shrink-0 border transition ${
+            entryCollectionDate !== getTodayDateString()
+              ? 'bg-amber-100/90 border-amber-600 ring-2 ring-amber-500/30'
+              : 'bg-white border-[#ded3be]'
+          }`}>
+            <Edit3 className={`w-3.5 h-3.5 ${entryCollectionDate !== getTodayDateString() ? 'text-amber-800' : 'text-stone-500'}`} />
+            <span className="text-[10px] font-black uppercase tracking-wider text-stone-600 hidden md:inline">
+              Collection Date:
             </span>
-          </button>
+            <input
+              type="date"
+              value={entryCollectionDate}
+              onChange={(e) => {
+                if (e.target.value) {
+                  setEntryCollectionDate(e.target.value);
+                }
+              }}
+              title="Database entry date stamped on recorded collections"
+              className={`text-xs font-bold bg-transparent focus:outline-none cursor-pointer ${
+                entryCollectionDate !== getTodayDateString() ? 'text-amber-950 font-black' : 'text-stone-800'
+              }`}
+            />
+            {entryCollectionDate !== getTodayDateString() ? (
+              <button
+                type="button"
+                onClick={() => setEntryCollectionDate(getTodayDateString())}
+                className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white px-2 py-0.5 rounded-md font-bold cursor-pointer transition shadow-xs whitespace-nowrap"
+                title="Reset collection entry date to Today"
+              >
+                Reset Today
+              </button>
+            ) : (
+              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/70 px-1.5 py-0.5 rounded">
+                Today
+              </span>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Backdated / Custom Collection Entry Date Notice Banner */}
+      {entryCollectionDate !== getTodayDateString() && (
+        <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-3 flex items-center justify-between gap-3 text-amber-950 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <CalendarDays className="w-5 h-5 text-amber-700 shrink-0" />
+            <div>
+              <p className="text-xs font-black">
+                Custom Collection Entry Date Active: {new Date(entryCollectionDate + 'T12:00:00').toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
+              </p>
+              <p className="text-[11px] text-amber-900/80 font-medium">
+                All "Mark Paid", "Mark Whole Group Paid", and partial collections will be recorded in the database and ledger on this collection date.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEntryCollectionDate(getTodayDateString())}
+            className="px-3 py-1 bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold rounded-xl transition cursor-pointer shrink-0 shadow-xs"
+          >
+            Reset to Today
+          </button>
+        </div>
+      )}
 
       {/* Route & Officer Selection Bar */}
       <div className="flex flex-col gap-3">
@@ -666,7 +794,7 @@ export const Collections: React.FC = () => {
             return (
               <button
                 key={day}
-                onClick={() => setSelectedDay(day)}
+                onClick={() => handleDaySelect(day)}
                 className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
                   isSelected
                     ? 'bg-[#251b14] text-amber-300 border border-amber-800/60 shadow-xs'
@@ -723,7 +851,7 @@ export const Collections: React.FC = () => {
                 return (
                   <div
                     key={day}
-                    onClick={() => setSelectedDay(day)}
+                    onClick={() => handleDaySelect(day)}
                     className="bg-[#fffdfa] p-3.5 rounded-2xl border border-[#ded3be] shadow-xs cursor-pointer hover:border-amber-600 transition group"
                   >
                     <div className="flex items-center justify-between">
@@ -957,6 +1085,28 @@ export const Collections: React.FC = () => {
                                         }`}>
                                           Week {m.installmentNumber} of {m.tenureWeeks || 32}
                                         </span>
+                                        {m.dueDate && (
+                                          <span className="text-[10px] text-stone-500 font-medium block mt-1">
+                                            Due: {new Date(m.dueDate).toLocaleDateString('en-GB')}
+                                          </span>
+                                        )}
+                                        {m.paidDate && (
+                                          <div className="flex items-center gap-1 mt-0.5">
+                                            <span className="text-[10px] text-emerald-800 font-bold">
+                                              Collected: {new Date(m.paidDate).toLocaleDateString('en-GB')}
+                                            </span>
+                                            {isManagerOrAdmin && m.installmentId && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handlePromptEditCollectedDate(m)}
+                                                className="text-stone-400 hover:text-amber-800 transition p-0.5 rounded cursor-pointer"
+                                                title="Edit collected date in database"
+                                              >
+                                                <Edit3 className="w-2.5 h-2.5" />
+                                              </button>
+                                            )}
+                                          </div>
+                                        )}
                                         {m.overdueWeeks > 1 && (
                                           <span className="text-[10px] text-rose-700 font-bold block mt-1">
                                             {m.overdueWeeks} weeks due up to today
@@ -1240,6 +1390,21 @@ export const Collections: React.FC = () => {
                     )}
                   </div>
                 )}
+              </div>
+
+              {/* Collection Entry Date */}
+              <div>
+                <label className="block font-bold text-stone-800 mb-1 flex items-center justify-between">
+                  <span>Collection Date *</span>
+                  <span className="text-[10px] text-stone-500 font-medium">Recorded in DB & ledger</span>
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={modalCollectionDate}
+                  onChange={(e) => setModalCollectionDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-bold text-stone-900 focus:outline-none focus:border-amber-600 shadow-xs cursor-pointer"
+                />
               </div>
 
               {/* Payment Method */}

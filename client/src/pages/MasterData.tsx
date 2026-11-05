@@ -24,7 +24,9 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  Loader2
+  Loader2,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -288,10 +290,17 @@ const InlineDateCell: React.FC<InlineDateCellProps> = ({
   }, [isEditing]);
 
   const handleCommit = async (valToSave?: string) => {
-    const val = valToSave !== undefined ? valToSave : dateStr;
+    const val = (valToSave !== undefined ? valToSave : dateStr).trim();
     if (disabled || isSaving) return;
     const origIso = getIsoDate(value);
-    if (val === origIso || !val) {
+    if (!val || val === origIso) {
+      setDateStr(origIso);
+      setIsEditing(false);
+      return;
+    }
+    const d = new Date(val);
+    if (isNaN(d.getTime())) {
+      setDateStr(origIso);
       setIsEditing(false);
       return;
     }
@@ -322,10 +331,7 @@ const InlineDateCell: React.FC<InlineDateCellProps> = ({
           ref={inputRef}
           type="date"
           value={dateStr}
-          onChange={(e) => {
-            setDateStr(e.target.value);
-            handleCommit(e.target.value);
-          }}
+          onChange={(e) => setDateStr(e.target.value)}
           onBlur={() => handleCommit()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -339,6 +345,31 @@ const InlineDateCell: React.FC<InlineDateCellProps> = ({
           disabled={isSaving}
           className="px-2 py-0.5 bg-white border-2 border-amber-600 rounded-lg text-xs font-bold text-stone-900 shadow-md outline-none"
         />
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            handleCommit();
+          }}
+          disabled={isSaving}
+          title="Save Date (or press Enter)"
+          className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded cursor-pointer transition shadow-xs"
+        >
+          <Check className="w-3 h-3" />
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setDateStr(getIsoDate(value));
+            setIsEditing(false);
+          }}
+          disabled={isSaving}
+          title="Cancel"
+          className="p-1 bg-stone-200 hover:bg-stone-300 text-stone-700 rounded cursor-pointer transition"
+        >
+          <X className="w-3 h-3" />
+        </button>
         {isSaving && <Loader2 className="w-3 h-3 text-amber-700 animate-spin shrink-0" />}
       </div>
     );
@@ -483,6 +514,7 @@ export const MasterData: React.FC = () => {
   });
   const scheduleLoan = instData?.loan;
   const installments = instData?.installments || [];
+  const [collapsedRows, setCollapsedRows] = useState<Record<string, boolean>>({});
 
   const updateInstMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => api.updateMasterInstallment(id, data),
@@ -492,12 +524,29 @@ export const MasterData: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['masterAllLoans'] });
       queryClient.invalidateQueries({ queryKey: ['loans'] });
       queryClient.invalidateQueries({ queryKey: ['dailyCollections'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyLedger'] });
+      queryClient.invalidateQueries({ queryKey: ['cashbook'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
       if (editingInstallment) {
         setEditingInstallment(null);
         alert('Installment updated successfully!');
       }
     },
     onError: (err: any) => alert(err.message || 'Failed to update installment')
+  });
+
+  const updatePaymentMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => api.updateMasterPayment(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['masterLoanInstallments', selectedLoanId] });
+      queryClient.invalidateQueries({ queryKey: ['dailyLedger'] });
+      queryClient.invalidateQueries({ queryKey: ['cashbook'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyCollections'] });
+    },
+    onError: (err: any) => alert(err.message || 'Failed to update payment')
   });
 
   const realignDatesMutation = useMutation({
@@ -628,8 +677,10 @@ export const MasterData: React.FC = () => {
   const handleOpenEditInst = (ins: any) => {
     setEditingInstallment(ins);
     const dStr = ins.dueDate ? new Date(ins.dueDate).toISOString().split('T')[0] : '';
+    const pStr = ins.paidDate ? new Date(ins.paidDate).toISOString().split('T')[0] : '';
     setInstForm({
       dueDate: dStr,
+      paidDate: pStr,
       expectedAmount: ins.expectedAmount || 0,
       allocatedPrincipal: ins.allocatedPrincipal || 0,
       allocatedInterest: ins.allocatedInterest || 0,
@@ -1256,6 +1307,7 @@ export const MasterData: React.FC = () => {
                       <tr>
                         <th className="px-4 py-2.5">Week #</th>
                         <th className="px-4 py-2.5">Due Date (Click to Edit)</th>
+                        <th className="px-4 py-2.5">Collected Date (Click to Edit)</th>
                         <th className="px-4 py-2.5">Expected Due</th>
                         <th className="px-4 py-2.5">Principal</th>
                         <th className="px-4 py-2.5">Interest</th>
@@ -1270,170 +1322,309 @@ export const MasterData: React.FC = () => {
                     <tbody className="divide-y divide-[#ece3d4]">
                       {isInstLoading ? (
                         <tr>
-                          <td colSpan={11} className="py-12 text-center text-stone-400 font-medium">
+                          <td colSpan={12} className="py-12 text-center text-stone-400 font-medium">
                             Loading schedule installments...
                           </td>
                         </tr>
                       ) : installments.length > 0 ? (
-                        installments.map((ins: any) => (
-                          <tr key={ins._id} className="hover:bg-[#faf6ee] transition">
-                            <td className="px-4 py-2.5 font-mono font-bold text-stone-900">
-                              W{ins.installmentNumber}
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <InlineDateCell
-                                value={ins.dueDate}
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { dueDate: val }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono font-black text-stone-900">
-                              <InlineTextCell
-                                value={ins.expectedAmount}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono font-black text-stone-900"
-                                onSave={async (val) => {
-                                  const exp = parseFloat(val) || 0;
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: {
-                                      expectedAmount: exp,
-                                      balanceAmount: Math.max(0, exp - (ins.paidAmount || 0))
+                        installments.map((ins: any) => {
+                          const hasMulti = Boolean(ins.payments && ins.payments.length > 1);
+                          // Default open: collapsedRows[ins._id] is undefined -> !collapsedRows[ins._id] is true
+                          const isExpanded = !collapsedRows[ins._id];
+
+                          return (
+                            <React.Fragment key={ins._id}>
+                              <tr className={`transition ${hasMulti ? 'bg-amber-50/20 hover:bg-amber-50/40' : 'hover:bg-[#faf6ee]'}`}>
+                                <td className="px-4 py-2.5 font-mono font-bold text-stone-900">
+                                  <div className="flex items-center gap-1.5">
+                                    {hasMulti && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setCollapsedRows(prev => ({ ...prev, [ins._id]: !prev[ins._id] }))}
+                                        className="p-1 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-950 transition cursor-pointer shadow-2xs"
+                                        title={isExpanded ? "Collapse collection breakdown" : "Expand collection breakdown"}
+                                      >
+                                        {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                      </button>
+                                    )}
+                                    <span>W{ins.installmentNumber}</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <InlineDateCell
+                                    value={ins.dueDate}
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { dueDate: val }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  {hasMulti ? (
+                                    <div className="flex flex-col gap-0.5">
+                                      <div className="flex items-center gap-1">
+                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-200 text-amber-950 border border-amber-300">
+                                          {ins.payments.length} Collections
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setCollapsedRows(prev => ({ ...prev, [ins._id]: !prev[ins._id] }))}
+                                          className="text-[10px] font-bold text-amber-800 hover:underline cursor-pointer"
+                                        >
+                                          {isExpanded ? 'Hide' : 'Show'}
+                                        </button>
+                                      </div>
+                                      <span className="text-[10px] text-stone-500 font-medium">
+                                        Latest: {ins.paidDate ? new Date(ins.paidDate).toLocaleDateString('en-GB') : '-'}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <InlineDateCell
+                                      value={ins.paidDate}
+                                      onSave={async (val) => {
+                                        await updateInstMutation.mutateAsync({
+                                          id: ins._id,
+                                          data: { paidDate: val }
+                                        });
+                                      }}
+                                    />
+                                  )}
+                                </td>
+                                <td className="px-4 py-2.5 font-mono font-black text-stone-900">
+                                  <InlineTextCell
+                                    value={ins.expectedAmount}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono font-black text-stone-900"
+                                    onSave={async (val) => {
+                                      const exp = parseFloat(val) || 0;
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: {
+                                          expectedAmount: exp,
+                                          balanceAmount: Math.max(0, exp - (ins.paidAmount || 0))
+                                        }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 font-mono text-stone-600">
+                                  <InlineTextCell
+                                    value={ins.allocatedPrincipal || 0}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono text-stone-600"
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { allocatedPrincipal: parseFloat(val) || 0 }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 font-mono text-stone-600">
+                                  <InlineTextCell
+                                    value={ins.allocatedInterest || 0}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono text-stone-600"
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { allocatedInterest: parseFloat(val) || 0 }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 font-mono text-stone-600">
+                                  <InlineTextCell
+                                    value={ins.allocatedSavings || 0}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono text-stone-600"
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { allocatedSavings: parseFloat(val) || 0 }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 font-mono font-bold text-emerald-700">
+                                  <InlineTextCell
+                                    value={ins.paidAmount || 0}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono font-bold text-emerald-700"
+                                    onSave={async (val) => {
+                                      const paid = parseFloat(val) || 0;
+                                      const exp = ins.expectedAmount || 0;
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: {
+                                          paidAmount: paid,
+                                          balanceAmount: Math.max(0, exp - paid),
+                                          status: paid >= exp && exp > 0 ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'PENDING')
+                                        }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 font-mono font-bold text-rose-700">
+                                  <InlineTextCell
+                                    value={ins.balanceAmount || 0}
+                                    type="number"
+                                    prefix="₹"
+                                    className="font-mono font-bold text-rose-700"
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { balanceAmount: parseFloat(val) || 0 }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <InlineSelectCell
+                                    value={ins.status || 'PENDING'}
+                                    options={[
+                                      { label: 'PAID', value: 'PAID' },
+                                      { label: 'PENDING', value: 'PENDING' },
+                                      { label: 'OVERDUE', value: 'OVERDUE' },
+                                      { label: 'PARTIAL', value: 'PARTIAL' }
+                                    ]}
+                                    badgeClassName={(v) =>
+                                      v === 'PAID'
+                                        ? 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                        : v === 'OVERDUE'
+                                        ? 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300'
+                                        : 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300'
                                     }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono text-stone-600">
-                              <InlineTextCell
-                                value={ins.allocatedPrincipal || 0}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono text-stone-600"
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { allocatedPrincipal: parseFloat(val) || 0 }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono text-stone-600">
-                              <InlineTextCell
-                                value={ins.allocatedInterest || 0}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono text-stone-600"
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { allocatedInterest: parseFloat(val) || 0 }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono text-stone-600">
-                              <InlineTextCell
-                                value={ins.allocatedSavings || 0}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono text-stone-600"
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { allocatedSavings: parseFloat(val) || 0 }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono font-bold text-emerald-700">
-                              <InlineTextCell
-                                value={ins.paidAmount || 0}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono font-bold text-emerald-700"
-                                onSave={async (val) => {
-                                  const paid = parseFloat(val) || 0;
-                                  const exp = ins.expectedAmount || 0;
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: {
-                                      paidAmount: paid,
-                                      balanceAmount: Math.max(0, exp - paid),
-                                      status: paid >= exp && exp > 0 ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'PENDING')
-                                    }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 font-mono font-bold text-rose-700">
-                              <InlineTextCell
-                                value={ins.balanceAmount || 0}
-                                type="number"
-                                prefix="₹"
-                                className="font-mono font-bold text-rose-700"
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { balanceAmount: parseFloat(val) || 0 }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <InlineSelectCell
-                                value={ins.status || 'PENDING'}
-                                options={[
-                                  { label: 'PAID', value: 'PAID' },
-                                  { label: 'PENDING', value: 'PENDING' },
-                                  { label: 'OVERDUE', value: 'OVERDUE' },
-                                  { label: 'PARTIAL', value: 'PARTIAL' }
-                                ]}
-                                badgeClassName={(v) =>
-                                  v === 'PAID'
-                                    ? 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                    : v === 'OVERDUE'
-                                    ? 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300'
-                                    : 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300'
-                                }
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { status: val }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <InlineTextCell
-                                value={ins.remarks || ''}
-                                placeholder="Add note..."
-                                className="font-medium text-stone-500 italic max-w-[120px] truncate"
-                                onSave={async (val) => {
-                                  await updateInstMutation.mutateAsync({
-                                    id: ins._id,
-                                    data: { remarks: val }
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <button
-                                onClick={() => handleOpenEditInst(ins)}
-                                className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold rounded-lg text-xs border border-amber-300 transition cursor-pointer"
-                                title="Open week edit modal"
-                              >
-                                <Edit3 className="w-3 h-3 text-amber-700" />
-                                <span>Edit</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { status: val }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <InlineTextCell
+                                    value={ins.remarks || ''}
+                                    placeholder="Add note..."
+                                    className="font-medium text-stone-500 italic max-w-[120px] truncate"
+                                    onSave={async (val) => {
+                                      await updateInstMutation.mutateAsync({
+                                        id: ins._id,
+                                        data: { remarks: val }
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-4 py-2.5 text-right">
+                                  <button
+                                    onClick={() => handleOpenEditInst(ins)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold rounded-lg text-xs border border-amber-300 transition cursor-pointer"
+                                    title="Open week edit modal"
+                                  >
+                                    <Edit3 className="w-3 h-3 text-amber-700" />
+                                    <span>Edit</span>
+                                  </button>
+                                </td>
+                              </tr>
+
+                              {/* OPTION A: EXPANDABLE SUB-ROWS FOR MULTI-COLLECTION INSTALLMENTS (DEFAULT OPEN) */}
+                              {hasMulti && isExpanded && ins.payments.map((p: any, pIdx: number) => (
+                                <tr key={p._id || pIdx} className="bg-amber-50/40 hover:bg-amber-100/50 border-b border-amber-100 text-xs transition">
+                                  {/* Sub-row label with indentation */}
+                                  <td className="px-4 py-2 pl-9 font-mono font-bold text-amber-950">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className="text-amber-600 font-black text-sm">↳</span>
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-200/80 text-[10px] font-black text-amber-950">
+                                        Part {pIdx + 1}
+                                      </span>
+                                    </span>
+                                  </td>
+
+                                  {/* Scheduled Due Date */}
+                                  <td className="px-4 py-2 font-mono text-stone-400 text-[11px]">
+                                    {ins.dueDate ? new Date(ins.dueDate).toLocaleDateString('en-GB') : '-'}
+                                  </td>
+
+                                  {/* Collected Date: Live Editable Inline to Move Between Cashbook Days! */}
+                                  <td className="px-4 py-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <InlineDateCell
+                                        value={p.paymentDate}
+                                        onSave={async (newDate) => {
+                                          await updatePaymentMutation.mutateAsync({
+                                            id: p._id,
+                                            data: { paymentDate: newDate }
+                                          });
+                                        }}
+                                      />
+                                      <span className="text-[9px] font-black uppercase tracking-wider bg-stone-100 text-stone-700 px-1 py-0.5 rounded border border-stone-200">
+                                        {p.paymentMethod || 'CASH'}
+                                      </span>
+                                    </div>
+                                  </td>
+
+                                  {/* Receipt Number */}
+                                  <td className="px-4 py-2 font-mono font-bold text-amber-950 text-[11px]">
+                                    {p.receiptNumber}
+                                  </td>
+
+                                  {/* Principal portion */}
+                                  <td className="px-4 py-2 font-mono text-stone-600 text-[11px]">
+                                    ₹{p.principalPortion?.toLocaleString('en-IN') || 0}
+                                  </td>
+
+                                  {/* Interest portion */}
+                                  <td className="px-4 py-2 font-mono text-stone-600 text-[11px]">
+                                    ₹{p.interestPortion?.toLocaleString('en-IN') || 0}
+                                  </td>
+
+                                  {/* Savings portion */}
+                                  <td className="px-4 py-2 font-mono text-stone-600 text-[11px]">
+                                    ₹{p.savingsPortion?.toLocaleString('en-IN') || 0}
+                                  </td>
+
+                                  {/* Amount Collected in this Part */}
+                                  <td className="px-4 py-2 font-mono font-black text-emerald-800 text-xs">
+                                    ₹{p.amount?.toLocaleString('en-IN')}
+                                  </td>
+
+                                  {/* Sub-row has no separate remaining balance */}
+                                  <td className="px-4 py-2 font-mono text-stone-400 text-[11px]">
+                                    -
+                                  </td>
+
+                                  {/* Status badge */}
+                                  <td className="px-4 py-2">
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                      COLLECTED
+                                    </span>
+                                  </td>
+
+                                  {/* Remarks */}
+                                  <td className="px-4 py-2 text-[11px] text-stone-600 italic max-w-[150px] truncate" title={p.remarks}>
+                                    {p.remarks || `Part ${pIdx + 1} collection`}
+                                  </td>
+
+                                  {/* Status / Sync pill */}
+                                  <td className="px-4 py-2 text-right">
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                      <span>Cashbook Synced</span>
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          );
+                        })
                       ) : (
                         <tr>
                           <td colSpan={11} className="py-12 text-center text-stone-400 font-medium">
@@ -2278,15 +2469,26 @@ export const MasterData: React.FC = () => {
               }}
               className="space-y-3.5"
             >
-              <div>
-                <label className="block font-bold text-stone-800 mb-1">Installment Due Date *</label>
-                <input
-                  type="date"
-                  required
-                  value={instForm.dueDate || ''}
-                  onChange={(e) => setInstForm({ ...instForm, dueDate: e.target.value })}
-                  className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-bold text-stone-900"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-stone-800 mb-1">Due Date (Expected) *</label>
+                  <input
+                    type="date"
+                    required
+                    value={instForm.dueDate || ''}
+                    onChange={(e) => setInstForm({ ...instForm, dueDate: e.target.value })}
+                    className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-bold text-stone-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-stone-800 mb-1">Collected Date (Paid)</label>
+                  <input
+                    type="date"
+                    value={instForm.paidDate || ''}
+                    onChange={(e) => setInstForm({ ...instForm, paidDate: e.target.value })}
+                    className="w-full px-3 py-2 bg-white border border-[#ded3be] rounded-xl font-bold text-stone-900"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

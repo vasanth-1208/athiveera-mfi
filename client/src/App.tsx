@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { BranchProvider } from './context/BranchContext';
 import { SidebarProvider } from './context/SidebarContext';
 import { ThemeProvider } from './context/ThemeContext';
+import { PwaProvider } from './context/PwaContext';
 import { Layout } from './components/Layout';
 
 import { Login } from './pages/Login';
@@ -85,8 +86,9 @@ export const App: React.FC = () => {
       <ThemeProvider>
         <AuthProvider>
           <BranchProvider>
-            <SidebarProvider>
-              <BrowserRouter>
+            <PwaProvider>
+              <SidebarProvider>
+                <BrowserRouter>
               <Routes>
               <Route path="/login" element={<Login />} />
 
@@ -125,9 +127,10 @@ export const App: React.FC = () => {
               </Route>
             </Routes>
           </BrowserRouter>
-          </SidebarProvider>
-        </BranchProvider>
-      </AuthProvider>
+              </SidebarProvider>
+            </PwaProvider>
+          </BranchProvider>
+        </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

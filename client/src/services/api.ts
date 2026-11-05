@@ -1,3 +1,5 @@
+import { authStorage } from '../utils/authStorage';
+
 function getApiBase(): string {
   const envUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
   // If not configured, or if mistakenly set to the frontend Netlify domain, use the /api proxy
@@ -13,7 +15,7 @@ export async function apiRequest<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = localStorage.getItem('athiveera_token');
+  const token = authStorage.getToken();
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -30,8 +32,7 @@ export async function apiRequest<T = any>(
   });
 
   if (res.status === 401) {
-    localStorage.removeItem('athiveera_token');
-    localStorage.removeItem('athiveera_user');
+    authStorage.clearAuth();
     if (!window.location.pathname.includes('/login')) {
       window.location.href = '/login';
     }
@@ -213,6 +214,7 @@ export const api = {
   updateMasterLoan: (id: string, data: any) => apiRequest(`/master-data/loans/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   getMasterLoanInstallments: (loanId: string) => apiRequest(`/master-data/loans/${loanId}/installments`),
   updateMasterInstallment: (id: string, data: any) => apiRequest(`/master-data/installments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateMasterPayment: (id: string, data: any) => apiRequest(`/master-data/payments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   realignLoanScheduleDates: (loanId: string) => apiRequest(`/master-data/loans/${loanId}/realign-schedule-dates`, { method: 'POST' }),
   getMasterGroups: (params?: any) => apiRequest(`/master-data/groups${cleanQuery(params)}`),
   updateMasterGroup: (id: string, data: any) => apiRequest(`/master-data/groups/${id}`, { method: 'PUT', body: JSON.stringify(data) })

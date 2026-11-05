@@ -1,16 +1,18 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../types';
 import { api } from '../services/api';
+import { authStorage, isPwa } from '../utils/authStorage';
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   loading: boolean;
-  login: (token: string, user: User) => void;
+  login: (token: string, user: User, isPwaClient?: boolean) => void;
   logout: () => void;
   isAdmin: boolean;
   isManager: boolean;
   isStaff: boolean;
+  isPwaApp: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -31,14 +33,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [user, setUser] = useState<User | null>(() => {
     try {
-      const saved = localStorage.getItem('athiveera_user');
-      return saved ? normalizeUser(JSON.parse(saved)) : null;
+      const saved = authStorage.getUser();
+      return saved ? normalizeUser(saved) : null;
     } catch {
       return null;
     }
   });
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('athiveera_token'));
+
+  const [token, setToken] = useState<string | null>(() => authStorage.getToken());
   const [loading, setLoading] = useState<boolean>(true);
+  const isPwaApp = isPwa();
 
   useEffect(() => {
     if (token) {
@@ -47,7 +51,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (res.success && res.user) {
             const cleanUser = normalizeUser(res.user);
             setUser(cleanUser);
-            localStorage.setItem('athiveera_user', JSON.stringify(cleanUser));
+            if (cleanUser) {
+              authStorage.updateUser(cleanUser);
+            }
           }
         })
         .catch(() => {
@@ -59,19 +65,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [token]);
 
-  const login = (newToken: string, newUser: User) => {
+  const login = (newToken: string, newUser: User, isPwaClient?: boolean) => {
     const cleanUser = normalizeUser(newUser) || newUser;
     setToken(newToken);
     setUser(cleanUser);
-    localStorage.setItem('athiveera_token', newToken);
-    localStorage.setItem('athiveera_user', JSON.stringify(cleanUser));
+    authStorage.saveAuth(newToken, cleanUser, isPwaClient);
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
-    localStorage.removeItem('athiveera_token');
-    localStorage.removeItem('athiveera_user');
+    authStorage.clearAuth();
     window.location.href = '/login';
   };
 
@@ -80,7 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isStaff = user?.role === 'COLLECTION_STAFF';
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, isAdmin, isManager, isStaff }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, isAdmin, isManager, isStaff, isPwaApp }}>
       {children}
     </AuthContext.Provider>
   );

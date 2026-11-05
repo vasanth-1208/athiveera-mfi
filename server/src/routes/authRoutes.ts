@@ -38,7 +38,7 @@ router.post('/setup-initial', async (req: Request, res: Response) => {
       return;
     }
 
-    const { username, password, name, phone, branchCode, branchName } = req.body;
+    const { username, password, name, phone, branchCode, branchName, clientType } = req.body;
     if (!username || !password || !name) {
       res.status(400).json({ success: false, message: 'Username, password, and full name are required' });
       return;
@@ -93,6 +93,10 @@ router.post('/setup-initial', async (req: Request, res: Response) => {
       });
     }
 
+    // Determine session lifetime: ONLY installed PWA gets 3 days; all web browsers (mobile & desktop) get 6 hours
+    const isPwaClient = clientType === 'PWA';
+    const expiresIn = isPwaClient ? '3d' : '6h';
+
     // Generate JWT token
     const token = jwt.sign(
       {
@@ -103,7 +107,7 @@ router.post('/setup-initial', async (req: Request, res: Response) => {
         branchId: null
       },
       ENV.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn }
     );
 
     res.status(201).json({
@@ -125,7 +129,7 @@ router.post('/setup-initial', async (req: Request, res: Response) => {
 
 router.post('/login', async (req: Request, res: Response) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, clientType } = req.body;
     if (!username || !password) {
       res.status(400).json({ success: false, message: 'Username and password are required' });
       return;
@@ -146,6 +150,12 @@ router.post('/login', async (req: Request, res: Response) => {
     const branchObj = user.branchId as any;
     const branchIdStr = branchObj ? ((branchObj._id || branchObj).toString()) : null;
 
+    // Session Security Policy:
+    // - ONLY installed PWA (Progressive Web App in standalone mode) gets 3 days (3d / 72 hours).
+    // - All web browsers (both mobile web browsers and desktop browsers) get 6 hours (6h).
+    const isPwaClient = clientType === 'PWA';
+    const expiresIn = isPwaClient ? '3d' : '6h';
+
     const token = jwt.sign(
       {
         id: user._id.toString(),
@@ -155,12 +165,14 @@ router.post('/login', async (req: Request, res: Response) => {
         branchId: branchIdStr
       },
       ENV.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn }
     );
 
     res.json({
       success: true,
       token,
+      expiresIn,
+      clientType: isPwaClient ? 'PWA' : 'BROWSER',
       user: {
         id: user._id.toString(),
         _id: user._id.toString(),

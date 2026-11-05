@@ -64,19 +64,21 @@ export const Cashbook: React.FC = () => {
     enabled: activeTab === 'DENOMINATIONS'
   });
 
-  // Denomination Local Form State
-  const [denomForm, setDenomForm] = useState({
-    notes500: 116,
-    notes200: 63,
-    notes100: 94,
-    notes50: 11,
+  const emptyDenomForm = {
+    notes500: 0,
+    notes200: 0,
+    notes100: 0,
+    notes50: 0,
     notes20: 0,
     notes10: 0,
     coins: 0,
-    sbAcc: 52629,
+    sbAcc: 0,
     caAcc: 0,
     notes: ''
-  });
+  };
+
+  // Denomination Local Form State (Defaults to all ZEROES before loading)
+  const [denomForm, setDenomForm] = useState(emptyDenomForm);
 
   // Staff List Query (Enabled to discover all active collection staff of branch)
   const { data: staffListData } = useQuery({
@@ -215,9 +217,15 @@ export const Cashbook: React.FC = () => {
           }
         });
         setStaffDenomForms(prev => ({ ...prev, ...nextForms }));
+      } else {
+        setStaffDenomForms({});
       }
+    } else {
+      // Clean slate: If no saved denomination document exists for this date, default all to ZERO
+      setDenomForm(emptyDenomForm);
+      setStaffDenomForms({});
     }
-  }, [denomData, activeStaffList]);
+  }, [denomData, activeStaffList, selectedDate]);
 
   const handleUpdateStaffField = (staffKey: string, field: keyof StaffDenomForm, value: number) => {
     setStaffDenomForms(prev => ({
@@ -253,7 +261,7 @@ export const Cashbook: React.FC = () => {
     denomForm.coins;
 
   const totalVaultCounted = physicalCashCounted + denomForm.sbAcc + denomForm.caAcc;
-  const currentSystemCash = ledgerData?.closingBalance ?? (denomData?.currentSystemBalance ?? 133179);
+  const currentSystemCash = ledgerData?.closingBalance ?? (denomData?.currentSystemBalance ?? 0);
   const variance = totalVaultCounted - currentSystemCash;
   const isTallied = Math.abs(variance) < 1;
 

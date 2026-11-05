@@ -110,6 +110,9 @@ const computeSingleDayTransactions = async (branchId: any, dateKey: string, bran
     });
   }
 
+  // Map loaded expense IDs to prevent duplicate additions
+  const loadedExpenseIds = new Set(expenses.map(e => String(e._id)));
+
   // Add Document Charges received for disbursed loans (Credit / Inflow)
   if (disbursements.length > 0) {
     disbursements.forEach(d => {
@@ -125,23 +128,45 @@ const computeSingleDayTransactions = async (branchId: any, dateKey: string, bran
     });
   }
 
-  // Add other credits from cash transactions (deduplicating collections and doc charges)
-  cashTxList.filter(t => t.type === 'CREDIT').forEach(t => {
-    const cat = (t.category || '').toUpperCase();
-    if (
-      !cat.includes('COLLECTION') &&
-      !cat.includes('DOCUMENT CHARGE') &&
-      !cat.includes('DOC_CHARGE') &&
-      t.relatedEntityType !== 'COLLECTION'
-    ) {
+  // Add Expenses from Expense collection (Negative amounts are Inflows / Recoveries, Positive amounts are Outflows)
+  expenses.forEach(e => {
+    if (e.amount < 0) {
       credits.push({
-        particulars: t.description || t.category || 'CASH RECEIPT',
-        category: t.category,
-        amount: t.amount,
-        details: t.description,
-        vNo: t.vNo
+        particulars: `RECOVERY / INCOMING: ${e.category || 'EXPENSE'}`,
+        category: e.category,
+        amount: Math.abs(e.amount),
+        details: e.description,
+        vNo: e.billRef
+      });
+    } else {
+      debits.push({
+        particulars: e.category || 'EXPENSE',
+        category: e.category,
+        amount: e.amount,
+        details: e.description,
+        vNo: e.billRef
       });
     }
+  });
+
+  // Add other credits from cash transactions (deduplicating collections, doc charges, and linked expenses)
+  cashTxList.filter(t => t.type === 'CREDIT').forEach(t => {
+    const cat = (t.category || '').toUpperCase();
+    const isCollection = cat.includes('COLLECTION') || t.relatedEntityType === 'COLLECTION';
+    const isDocCharge = cat.includes('DOCUMENT CHARGE') || cat.includes('DOC_CHARGE');
+    const isLinkedExpense = t.relatedEntityId && loadedExpenseIds.has(String(t.relatedEntityId));
+
+    if (isCollection && (collectionsTotal > 0 || routePayments.length > 0)) return;
+    if (isDocCharge && disbursements.some(d => d.docCharges && d.docCharges > 0)) return;
+    if (isLinkedExpense) return;
+
+    credits.push({
+      particulars: t.description || t.category || 'CASH RECEIPT',
+      category: t.category,
+      amount: t.amount,
+      details: t.description,
+      vNo: t.vNo
+    });
   });
 
   // Add Loan Disbursements (Debits / Payments Outflows ONLY - full principal)
@@ -157,17 +182,6 @@ const computeSingleDayTransactions = async (branchId: any, dateKey: string, bran
     });
   }
 
-  // Add Expenses (Debits)
-  expenses.forEach(e => {
-    debits.push({
-      particulars: e.category || 'EXPENSE',
-      category: e.category,
-      amount: e.amount,
-      details: e.description,
-      vNo: e.billRef
-    });
-  });
-
   // For 2026-10-29 Pollachi branch, ensure office expense of 200 (MOBILE BAKECASE CHANGE) is present
   if (branchCode === 'POLLACHI' && dateKey === '2026-10-29') {
     const hasOfficeExp = debits.some(d => d.amount === 200 && (d.particulars?.includes('OFFICE') || d.details?.includes('BAKECASE') || d.details?.includes('BACKCASE')));
@@ -182,22 +196,22 @@ const computeSingleDayTransactions = async (branchId: any, dateKey: string, bran
     }
   }
 
-  // Add other debits from cash transactions (deduplicating loans and expenses)
+  // Add other debits from cash transactions (deduplicating loans and linked expenses)
   cashTxList.filter(t => t.type === 'DEBIT').forEach(t => {
     const cat = (t.category || '').toUpperCase();
-    if (
-      !cat.includes('LOAN') &&
-      !cat.includes('EXPENSE') &&
-      t.relatedEntityType !== 'LOAN_DISBURSEMENT'
-    ) {
-      debits.push({
-        particulars: t.description || t.category || 'CASH PAYMENT',
-        category: t.category,
-        amount: t.amount,
-        details: t.description,
-        vNo: t.vNo
-      });
-    }
+    const isLoan = cat.includes('LOAN') || t.relatedEntityType === 'LOAN_DISBURSEMENT';
+    const isLinkedExpense = t.relatedEntityId && loadedExpenseIds.has(String(t.relatedEntityId));
+
+    if (isLoan && disbursements.length > 0) return;
+    if (isLinkedExpense) return;
+
+    debits.push({
+      particulars: t.description || t.category || 'CASH PAYMENT',
+      category: t.category,
+      amount: t.amount,
+      details: t.description,
+      vNo: t.vNo
+    });
   });
 
   const totalCredits = credits.reduce((s, c) => s + c.amount, 0);
@@ -250,7 +264,7 @@ const computeClosingBalanceUpTo = async (branchId: any, upToDateKey: string): Pr
 };
 
 // Full Ledger generator for a date
-const getFullDailyLedger = async (branchId: any, dateKey: string) => {
+export const getFullDailyLedger = async (branchId: any, dateKey: string) => {
   const branch = await Branch.findById(branchId);
   const branchCode = branch?.code || '';
 

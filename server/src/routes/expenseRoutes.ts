@@ -69,16 +69,9 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    let fuelRate = parseFloat(customFuelRate) || 2.16;
     let finalAmount = parseFloat(amount);
-
-    if (isTravelKM || category.toUpperCase().includes('PETROL') || category.toUpperCase().includes('TRAVEL')) {
-      if (isNaN(finalAmount) || finalAmount <= 0) {
-        if (travelKM) {
-          finalAmount = Math.round(parseFloat(travelKM) * fuelRate);
-        }
-      }
-    }
+    let fuelRate = parseFloat(customFuelRate) || 0;
+    let travelDistance = parseFloat(travelKM) || 0;
 
     if (isNaN(finalAmount) || finalAmount === 0) {
       res.status(400).json({ success: false, message: 'Expense amount cannot be zero' });
@@ -104,11 +97,11 @@ router.post('/', async (req: Request, res: Response) => {
     const expense = await Expense.create({
       branchId,
       expenseDate: expenseDate ? new Date(expenseDate) : new Date(),
-      category: isTravelKM ? 'FUEL EXPENSES' : category,
+      category: category.trim(),
       amount: finalAmount,
       billRef: billRef || '',
       description: description || '',
-      travelKM: travelKM ? parseFloat(travelKM) : 0,
+      travelKM: travelDistance,
       fuelRate,
       staffId: assignedStaffId,
       staffName: assignedStaffName,
@@ -235,6 +228,32 @@ router.delete('/:id', requireRole('MAIN_ADMIN'), async (req: Request, res: Respo
     if (!expense) {
       res.status(404).json({ success: false, message: 'Expense not found' });
       return;
+    }
+
+    // Delete associated CashTransaction if exists
+    const { CashTransaction } = await import('../models/CashTransaction');
+    const { Branch } = await import('../models/Branch');
+
+    await CashTransaction.deleteMany({
+      $or: [
+        { relatedEntityId: expense._id },
+        { relatedEntityType: 'EXPENSE', vNo: expense.billRef || '__NO_REF__', amount: Math.abs(expense.amount), branchId: expense.branchId }
+      ]
+    });
+
+    // Reverse branch balance if approved
+    if (expense.status === 'APPROVED') {
+      const branch = await Branch.findById(expense.branchId);
+      if (branch) {
+        const isCreditInflow = expense.amount < 0;
+        const delta = isCreditInflow ? -Math.abs(expense.amount) : Math.abs(expense.amount);
+        if (expense.paymentMethod === 'CASH') {
+          branch.cashBalance += delta;
+        } else {
+          branch.bankBalance += delta;
+        }
+        await branch.save();
+      }
     }
 
     await Expense.findByIdAndDelete(req.params.id);

@@ -11,6 +11,7 @@ import { CashTransaction } from '../models/CashTransaction';
 import { Expense } from '../models/Expense';
 import { getRouteDateForWeekday } from './collectionRoutes';
 import { getPendingOverdueRegister } from '../services/pendingService';
+import { getFullDailyLedger } from './cashbookRoutes';
 import { authenticate } from '../middleware/auth';
 import { enforceBranchScope, requireRole } from '../middleware/roles';
 
@@ -202,19 +203,33 @@ router.get('/metrics', async (req: Request, res: Response) => {
       interBranchBalance = Math.abs(inAmt - outAmt);
     }
 
-    // 9. Branch cash & bank balances from verified vault records
+    // 9. Branch cash & bank balances from verified vault ledger closing records
+    const todayDateKey = new Date().toISOString().split('T')[0];
     let totalCashBalance = 0;
     let totalBankBalance = 0;
 
     if (selectedBranch) {
-      totalCashBalance = Math.max(0, selectedBranch.cashBalance || 0);
+      try {
+        const ledger = await getFullDailyLedger(selectedBranch._id, todayDateKey);
+        totalCashBalance = Math.max(0, ledger.closingBalance || 0);
+        await Branch.findByIdAndUpdate(selectedBranch._id, { cashBalance: totalCashBalance });
+      } catch (e) {
+        totalCashBalance = Math.max(0, selectedBranch.cashBalance || 0);
+      }
       totalBankBalance = Math.max(0, selectedBranch.bankBalance || 0);
     } else {
       const branches = await Branch.find();
-      branches.forEach(b => {
-        totalCashBalance += Math.max(0, b.cashBalance || 0);
+      for (const b of branches) {
+        try {
+          const ledger = await getFullDailyLedger(b._id, todayDateKey);
+          const bCash = Math.max(0, ledger.closingBalance || 0);
+          totalCashBalance += bCash;
+          await Branch.findByIdAndUpdate(b._id, { cashBalance: bCash });
+        } catch (e) {
+          totalCashBalance += Math.max(0, b.cashBalance || 0);
+        }
         totalBankBalance += Math.max(0, b.bankBalance || 0);
-      });
+      }
     }
 
     const totalMembersGiven = allDisbursedLoans.length;

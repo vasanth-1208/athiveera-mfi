@@ -28,6 +28,7 @@ import {
   ArrowDown
 } from 'lucide-react';
 import { api } from '../services/api';
+import { authStorage } from '../utils/authStorage';
 import { useBranch } from '../context/BranchContext';
 
 type ReportTab = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'PENDING_EMI' | 'PROFIT_LOSS';
@@ -92,7 +93,7 @@ export const Reports: React.FC = () => {
   const handleExport = async (endpoint: string, params: Record<string, any> = {}, defaultName = 'report') => {
     try {
       setExportLoading(endpoint);
-      const token = localStorage.getItem('athiveera_token');
+      const token = authStorage.getToken();
       const searchParams = new URLSearchParams();
       if (token) searchParams.append('token', token);
       if (selectedBranchId) searchParams.append('branchId', selectedBranchId);
@@ -1356,36 +1357,36 @@ export const Reports: React.FC = () => {
 
             {/* P&L Top Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Revenue</p>
-                <p className="text-xl font-black text-emerald-700 mt-0.5">
+              <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Total Operating Revenue</p>
+                <p className="text-xl font-black text-emerald-700 dark:text-emerald-400 mt-0.5">
                   ₹{(plData?.revenue?.totalRevenue || 0).toLocaleString('en-IN')}
                 </p>
-                <span className="text-[10px] text-stone-500 font-medium">Interest + Documentation charges</span>
+                <span className="text-[10px] text-stone-500 dark:text-stone-300 font-medium">Interest + Documentation charges</span>
               </div>
 
-              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Total Operating Expenses</p>
-                <p className="text-xl font-black text-rose-700 mt-0.5">
+              <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Total Operating Expenses</p>
+                <p className="text-xl font-black text-rose-700 dark:text-rose-400 mt-0.5">
                   ₹{(plData?.expenses?.totalExpenses || 0).toLocaleString('en-IN')}
                 </p>
-                <span className="text-[10px] text-stone-500 font-medium">Travel, fuel, rent & salaries</span>
+                <span className="text-[10px] text-stone-500 dark:text-stone-300 font-medium">Travel, fuel, rent & salaries</span>
               </div>
 
-              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Net Operating Profit</p>
-                <p className={`text-xl font-black mt-0.5 ${(plData?.netProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Net Operating Profit</p>
+                <p className={`text-xl font-black mt-0.5 ${(plData?.netProfit || 0) >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
                   ₹{(plData?.netProfit || 0).toLocaleString('en-IN')}
                 </p>
-                <span className="text-[10px] text-emerald-800 font-bold">Surplus after all overheads</span>
+                <span className="text-[10px] text-emerald-800 dark:text-emerald-300 font-bold">Surplus after all overheads</span>
               </div>
 
-              <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs">
-                <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">Operating Margin</p>
-                <p className="text-xl font-black text-amber-950 mt-0.5">
+              <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs">
+                <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">Operating Margin</p>
+                <p className="text-xl font-black text-amber-950 dark:text-amber-400 mt-0.5">
                   {plData?.profitMargin || 0}%
                 </p>
-                <span className="text-[10px] text-stone-500 font-medium">Net profit / Total revenue</span>
+                <span className="text-[10px] text-stone-500 dark:text-stone-300 font-medium">Net profit / Total revenue</span>
               </div>
             </div>
 
@@ -1750,37 +1751,37 @@ export const Reports: React.FC = () => {
 
                 {/* Bottom Realized Revenue Statement Card (Matching bottom of Excel template) */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs flex items-center justify-between">
+                  <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs flex items-center justify-between">
                     <div>
-                      <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">DOCUMENT CHARGE</p>
-                      <p className="text-lg font-black text-amber-900 mt-0.5">
+                      <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">DOCUMENT CHARGE</p>
+                      <p className="text-lg font-black text-amber-900 dark:text-amber-400 mt-0.5">
                         ₹{pnlFilteredTotals.docCharge.toLocaleString('en-IN')}
                       </p>
-                      <span className="text-[10px] text-stone-500">Collected upfront at disbursement</span>
+                      <span className="text-[10px] text-stone-500 dark:text-stone-300">Collected upfront at disbursement</span>
                     </div>
-                    <Coins className="w-8 h-8 text-amber-600/30" />
+                    <Coins className="w-8 h-8 text-amber-600/30 dark:text-amber-400/30" />
                   </div>
 
-                  <div className="bg-[#fffdfa] p-4 rounded-2xl border border-[#ded3be] shadow-xs flex items-center justify-between">
+                  <div className="bg-[#fffdfa] dark:bg-[#1f1712] p-4 rounded-2xl border border-[#ded3be] dark:border-[#382d24] shadow-xs flex items-center justify-between">
                     <div>
-                      <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">INTEREST REALIZED</p>
-                      <p className="text-lg font-black text-emerald-700 mt-0.5">
+                      <p className="text-[10px] font-bold text-stone-500 dark:text-stone-300 uppercase tracking-wider">INTEREST REALIZED</p>
+                      <p className="text-lg font-black text-emerald-700 dark:text-emerald-400 mt-0.5">
                         ₹{pnlFilteredTotals.totalInterest.toLocaleString('en-IN')}
                       </p>
-                      <span className="text-[10px] text-stone-500">Repayment interest earned</span>
+                      <span className="text-[10px] text-stone-500 dark:text-stone-300">Repayment interest earned</span>
                     </div>
-                    <TrendingUp className="w-8 h-8 text-emerald-600/30" />
+                    <TrendingUp className="w-8 h-8 text-emerald-600/30 dark:text-emerald-400/30" />
                   </div>
 
-                  <div className="bg-emerald-50/60 p-4 rounded-2xl border border-emerald-300 shadow-xs flex items-center justify-between">
+                  <div className="bg-emerald-50/60 dark:bg-emerald-950/30 p-4 rounded-2xl border border-emerald-300 dark:border-emerald-800/60 shadow-xs flex items-center justify-between">
                     <div>
-                      <p className="text-[10px] font-black text-emerald-900 uppercase tracking-wider">INT & DOCUMENT CHARGE</p>
-                      <p className="text-xl font-black text-emerald-800 mt-0.5">
+                      <p className="text-[10px] font-black text-emerald-900 dark:text-emerald-300 uppercase tracking-wider">INT & DOCUMENT CHARGE</p>
+                      <p className="text-xl font-black text-emerald-800 dark:text-emerald-400 mt-0.5">
                         ₹{(pnlFilteredTotals.docCharge + pnlFilteredTotals.totalInterest).toLocaleString('en-IN')}
                       </p>
-                      <span className="text-[10px] text-emerald-700 font-bold">Total Operating Revenue</span>
+                      <span className="text-[10px] text-emerald-700 dark:text-emerald-300 font-bold">Total Operating Revenue</span>
                     </div>
-                    <Wallet className="w-8 h-8 text-emerald-600/40" />
+                    <Wallet className="w-8 h-8 text-emerald-600/40 dark:text-emerald-400/40" />
                   </div>
                 </div>
               </div>

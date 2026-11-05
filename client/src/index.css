@@ -400,3 +400,29 @@ html.dark kbd {
     border: none !important;
   }
 }
+
+/* Mobile Safe Area & PWA Display Enhancements */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+html, body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Ensure mobile tables have smooth momentum scroll */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Responsive modal scaling on small mobile viewports */
+@media (max-width: 640px) {
+  .modal-dialog-responsive {
+    width: 95vw !important;
+    max-width: 95vw !important;
+    margin: 0.5rem auto !important;
+  }
+}

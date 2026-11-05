@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { TrendingDown, Plus, Fuel, CheckCircle, Clock, Edit3, Trash2, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { TrendingDown, Plus, CheckCircle, Clock, Edit3, Trash2, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api } from '../services/api';
 import { useBranch } from '../context/BranchContext';
 import { useAuth } from '../context/AuthContext';
@@ -14,13 +14,13 @@ export const Expenses: React.FC = () => {
 
   // Category management
   const DEFAULT_CATEGORIES = [
-    'FUEL / PETROL EXPENSES',
-    'STAFF WELFARE EXPENSES',
     'OFFICE EXPENSES',
+    'STAFF WELFARE EXPENSES',
     'OFFICE RENT',
-    'ELECTRICAL MAINTENANCE',
     'PRINTING AND STATIONARY',
+    'ELECTRICAL MAINTENANCE',
     'COMPUTER & IT MAINTENANCE',
+    'FUEL / TRAVEL EXPENSES',
     'WAGES / LABOUR',
     'POOJA EXPENSES',
     'BONUS / ALLOWANCE',
@@ -59,12 +59,10 @@ export const Expenses: React.FC = () => {
   };
 
   const [formData, setFormData] = useState({
-    category: 'FUEL / PETROL EXPENSES',
+    category: 'OFFICE EXPENSES',
     amount: '',
-    fuelRate: '2.16',
     billRef: '',
     description: '',
-    travelKM: '',
     staffId: '',
     staffName: '',
     expenseDate: new Date().toISOString().split('T')[0],
@@ -74,12 +72,10 @@ export const Expenses: React.FC = () => {
   // Edit Expense State (Manager & Admin - All Fields)
   const [editingExpense, setEditingExpense] = useState<any | null>(null);
   const [editExpenseForm, setEditExpenseForm] = useState({
-    category: 'FUEL / PETROL EXPENSES',
+    category: 'OFFICE EXPENSES',
     amount: '',
-    fuelRate: '2.16',
     billRef: '',
     description: '',
-    travelKM: '',
     staffId: '',
     staffName: '',
     paymentMethod: 'CASH' as 'CASH' | 'BANK',
@@ -104,12 +100,10 @@ export const Expenses: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       setIsModalOpen(false);
       setFormData({
-        category: 'STAFF WELFARE EXPENSES',
+        category: 'OFFICE EXPENSES',
         amount: '',
-        fuelRate: '2.16',
         billRef: '',
         description: '',
-        travelKM: '',
         staffId: '',
         staffName: '',
         expenseDate: new Date().toISOString().split('T')[0],
@@ -150,12 +144,10 @@ export const Expenses: React.FC = () => {
   const handleOpenEditExpense = (e: any) => {
     setEditingExpense(e);
     setEditExpenseForm({
-      category: e.category || 'STAFF WELFARE EXPENSES',
+      category: e.category || 'OFFICE EXPENSES',
       amount: String(e.amount || 0),
-      fuelRate: String(e.fuelRate || '2.16'),
       billRef: e.billRef || '',
       description: e.description || '',
-      travelKM: String(e.travelKM || ''),
       staffId: e.staffId?._id || e.staffId || '',
       staffName: e.staffName || '',
       paymentMethod: e.paymentMethod || 'CASH',
@@ -167,8 +159,8 @@ export const Expenses: React.FC = () => {
   const handleEditExpenseSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const amt = parseFloat(editExpenseForm.amount);
-    if (!amt || amt <= 0) {
-      setEditExpenseError('Expense amount must be greater than zero');
+    if (!amt || amt === 0) {
+      setEditExpenseError('Expense amount cannot be zero');
       return;
     }
     updateExpenseMutation.mutate({
@@ -176,10 +168,8 @@ export const Expenses: React.FC = () => {
       data: {
         category: editExpenseForm.category,
         amount: amt,
-        fuelRate: parseFloat(editExpenseForm.fuelRate) || 2.16,
         billRef: editExpenseForm.billRef,
         description: editExpenseForm.description,
-        travelKM: parseFloat(editExpenseForm.travelKM) || 0,
         staffId: editExpenseForm.staffId || null,
         staffName: editExpenseForm.staffName,
         paymentMethod: editExpenseForm.paymentMethod,
@@ -192,26 +182,6 @@ export const Expenses: React.FC = () => {
     if (window.confirm(`Are you sure you want to permanently delete this expense of ₹${e.amount} (${e.category})? This action cannot be undone.`)) {
       deleteExpenseMutation.mutate(e._id);
     }
-  };
-
-  const handleKMChange = (kmVal: string) => {
-    const km = parseFloat(kmVal) || 0;
-    const rate = parseFloat(formData.fuelRate) || 2.16;
-    setFormData({
-      ...formData,
-      travelKM: kmVal,
-      amount: kmVal ? String(Math.round(km * rate)) : ''
-    });
-  };
-
-  const handleFuelRateChange = (rateVal: string) => {
-    const rate = parseFloat(rateVal) || 0;
-    const km = parseFloat(formData.travelKM) || 0;
-    setFormData({
-      ...formData,
-      fuelRate: rateVal,
-      amount: km > 0 && rate > 0 ? String(Math.round(km * rate)) : formData.amount
-    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -273,9 +243,9 @@ export const Expenses: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-black text-stone-900 dark:text-white tracking-tight">Operating Expenses & Travel KM</h2>
+          <h2 className="text-2xl font-black text-stone-900 dark:text-white tracking-tight">Operating Expenses</h2>
           <p className="text-xs text-stone-500 dark:text-stone-300 font-medium mt-0.5">
-            Track branch utility bills, office maintenance, salaries, and staff petrol claims with exact ₹2.16/km calculation
+            Track branch utility bills, office maintenance, salaries, vendor bills, and operational expenses
           </p>
         </div>
         <button
@@ -283,7 +253,7 @@ export const Expenses: React.FC = () => {
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-stone-950 rounded-xl text-xs font-bold shadow-md shadow-amber-900/20 transition cursor-pointer"
         >
           <Plus className="w-4 h-4" />
-          <span>Record Expense / KM Claim</span>
+          <span>Record Expense</span>
         </button>
       </div>
 
@@ -334,7 +304,6 @@ export const Expenses: React.FC = () => {
                     )}
                   </div>
                 </th>
-                <th className="px-4 py-3">KM / Rate</th>
                 <th className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort('staff')}>
                   <div className="flex items-center gap-1">
                     <span>Staff</span>
@@ -372,7 +341,7 @@ export const Expenses: React.FC = () => {
             <tbody className="divide-y divide-[#ece3d4]">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="text-center py-10 text-stone-400 font-medium">
+                  <td colSpan={8} className="text-center py-10 text-stone-400 font-medium">
                     Loading operating expenses...
                   </td>
                 </tr>
@@ -384,9 +353,6 @@ export const Expenses: React.FC = () => {
                     </td>
                     <td className="px-4 py-3 font-semibold text-slate-900">{e.category}</td>
                     <td className="px-4 py-3 font-mono text-slate-500">{e.billRef || '-'}</td>
-                    <td className="px-4 py-3 font-mono text-slate-600">
-                      {e.travelKM > 0 ? `${e.travelKM} KM @ ₹${e.fuelRate}` : '-'}
-                    </td>
                     <td className="px-4 py-3 text-slate-700">{e.staffName || 'Staff'}</td>
                     <td className={`px-4 py-3 font-bold text-sm ${e.amount < 0 ? 'text-emerald-700' : 'text-slate-900'}`}>
                       {e.amount < 0 ? `-₹${Math.abs(e.amount).toLocaleString('en-IN')}` : `₹${e.amount?.toLocaleString('en-IN')}`}
@@ -437,7 +403,7 @@ export const Expenses: React.FC = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9} className="text-center py-10 text-slate-400">
+                  <td colSpan={8} className="text-center py-10 text-slate-400">
                     No operating expenses recorded
                   </td>
                 </tr>
@@ -538,13 +504,13 @@ export const Expenses: React.FC = () => {
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Description / Route / Purpose *</label>
+                <label className="block font-semibold text-slate-700 mb-1">Description / Purpose *</label>
                 <textarea
                   rows={2}
                   required
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="e.g. Somandurai route fuel or tea for meeting..."
+                  placeholder="e.g. Office maintenance, stationery purchase, tea/snacks, electricity bill..."
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-brand-500"
                 />
               </div>
@@ -651,7 +617,7 @@ export const Expenses: React.FC = () => {
                   <span>Edit Expense Record</span>
                 </h3>
                 <p className="text-xs text-slate-500 font-medium mt-0.5">
-                  Update category, amount, travel KM, payment method, bill ref, or status.
+                  Update category, amount, payment method, bill ref, or status.
                 </p>
               </div>
               <button

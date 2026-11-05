@@ -1,0 +1,63 @@
+{
+  "id": "/",
+  "name": "Athiveera MFI Core Banking",
+  "short_name": "Athiveera MFI",
+  "description": "Athiveera Microfinance Core Banking, Route Collections, Loan Management & Financial Ledger",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#170f09",
+  "theme_color": "#d97706",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Daily Collections",
+      "short_name": "Collections",
+      "description": "Open Today's Route Collections Register",
+      "url": "/collections",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Loan Applications",
+      "short_name": "Loans",
+      "description": "View Active Loans and Applications",
+      "url": "/loans",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Executive Dashboard",
+      "short_name": "Dashboard",
+      "description": "Financial Metrics and Vault Balances",
+      "url": "/",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "categories": ["finance", "productivity", "business"]
+}
+

@@ -9,6 +9,7 @@ import { FollowUp } from '../models/FollowUp';
 import { authenticate } from '../middleware/auth';
 import { requireRole } from '../middleware/roles';
 import { parseExcelDate } from '../services/importService';
+import { getNextReceiptNumber } from '../services/receiptService';
 
 const router = Router();
 
@@ -424,14 +425,104 @@ router.get('/loans/:id/installments', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'
       return;
     }
 
-    const installments = await Installment.find({ loanId: loan._id })
+    const rawInstallments = await Installment.find({ loanId: loan._id })
       .sort({ installmentNumber: 1 })
       .lean();
+
+    const payments = await Payment.find({
+      loanId: loan._id,
+      isReversed: { $ne: true }
+    }).sort({ paymentDate: 1, createdAt: 1 }).lean();
+
+    const installments = rawInstallments.map((ins: any) => {
+      const matchedPayments = payments.filter((p: any) =>
+        p.allocations?.some((a: any) =>
+          (a.installmentId && String(a.installmentId) === String(ins._id)) ||
+          a.installmentNumber === ins.installmentNumber
+        )
+      ).map((p: any) => {
+        const alloc = p.allocations?.find((a: any) =>
+          (a.installmentId && String(a.installmentId) === String(ins._id)) ||
+          a.installmentNumber === ins.installmentNumber
+        );
+        return {
+          _id: p._id,
+          receiptNumber: p.receiptNumber,
+          paymentDate: p.paymentDate,
+          amount: alloc?.amount || p.amount,
+          principalPortion: alloc?.principalPortion || 0,
+          interestPortion: alloc?.interestPortion || 0,
+          savingsPortion: alloc?.savingsPortion || 0,
+          paymentMethod: p.paymentMethod || 'CASH',
+          remarks: p.remarks || ''
+        };
+      });
+
+      return {
+        ...ins,
+        paidDate: ins.paidDate || (matchedPayments.length > 0 ? matchedPayments[matchedPayments.length - 1].paymentDate : (ins.paidAmount > 0 ? ins.dueDate : null)),
+        payments: matchedPayments
+      };
+    });
 
     res.json({
       success: true,
       loan,
       installments
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update specific payment receipt date / amount / remarks and synchronize with cashbook
+router.put('/payments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), async (req: Request, res: Response) => {
+  try {
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      res.status(404).json({ success: false, message: 'Payment receipt not found' });
+      return;
+    }
+
+    const { paymentDate, amount, remarks } = req.body;
+    if (paymentDate) {
+      payment.paymentDate = parseExcelDate(paymentDate);
+    }
+    if (amount !== undefined) {
+      payment.amount = Number(amount);
+      if (payment.allocations && payment.allocations.length === 1) {
+        payment.allocations[0].amount = Number(amount);
+      }
+    }
+    if (remarks !== undefined) {
+      payment.remarks = remarks;
+    }
+
+    await payment.save();
+
+    // If linked to an installment, also update installment's paidDate to the latest collection date
+    if (payment.allocations && payment.allocations.length > 0) {
+      for (const a of payment.allocations) {
+        if (a.installmentId) {
+          const inst = await Installment.findById(a.installmentId);
+          if (inst) {
+            const allP = await Payment.find({
+              'allocations.installmentId': inst._id,
+              isReversed: { $ne: true }
+            }).sort({ paymentDate: -1 });
+            if (allP.length > 0) {
+              inst.paidDate = allP[0].paymentDate;
+              await inst.save();
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Payment receipt ${payment.receiptNumber} successfully updated and attributed to ${payment.paymentDate ? payment.paymentDate.toISOString().slice(0, 10) : ''}`,
+      payment
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
@@ -448,6 +539,7 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
 
     const {
       dueDate,
+      paidDate,
       expectedAmount,
       allocatedPrincipal,
       allocatedInterest,
@@ -459,6 +551,28 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
     } = req.body;
 
     if (dueDate) inst.dueDate = parseExcelDate(dueDate);
+
+    // If paidDate (collected date) is explicitly passed
+    if (paidDate !== undefined) {
+      if (paidDate) {
+        inst.paidDate = parseExcelDate(paidDate);
+        // If not already paid, setting collected date marks as collected
+        if (!paidAmount && (inst.paidAmount === 0 || inst.paidAmount === undefined)) {
+          inst.paidAmount = inst.expectedAmount;
+          inst.balanceAmount = 0;
+          inst.status = 'PAID';
+        }
+      } else {
+        // Clearing collected date resets collection
+        inst.paidDate = null;
+        if (paidAmount === undefined) {
+          inst.paidAmount = 0;
+          inst.balanceAmount = inst.expectedAmount;
+          inst.status = 'PENDING';
+        }
+      }
+    }
+
     if (expectedAmount !== undefined) inst.expectedAmount = Number(expectedAmount);
     if (allocatedPrincipal !== undefined) inst.allocatedPrincipal = Number(allocatedPrincipal);
     if (allocatedInterest !== undefined) inst.allocatedInterest = Number(allocatedInterest);
@@ -468,11 +582,19 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
       if (balanceAmount === undefined) {
         inst.balanceAmount = Math.max(0, (inst.expectedAmount || 0) - inst.paidAmount);
       }
+      if (inst.paidAmount > 0 && !inst.paidDate) {
+        inst.paidDate = inst.dueDate;
+      } else if (inst.paidAmount === 0 && paidDate === undefined) {
+        inst.paidDate = null;
+      }
     }
     if (balanceAmount !== undefined) inst.balanceAmount = Number(balanceAmount);
     
     if (status) {
       inst.status = status;
+      if (status === 'PAID' && !inst.paidDate) {
+        inst.paidDate = inst.dueDate;
+      }
     } else if (paidAmount !== undefined) {
       if (inst.paidAmount >= inst.expectedAmount && inst.expectedAmount > 0) {
         inst.status = 'PAID';
@@ -501,45 +623,69 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
       }
       await loan.save();
 
+      // Check if all loans under this group are settled/closed, update group status
+      const groupLoans = await Loan.find({ groupId: loan.groupId });
+      const hasLiveLoans = groupLoans.some(l => l.status === 'ACTIVE' || l.status === 'OVERDUE');
+      await Group.findByIdAndUpdate(loan.groupId, {
+        status: hasLiveLoans ? 'LIVE' : 'CLOSED'
+      });
+
       // Keep Payment record in sync with installment payment & date
       const rcpt = `RCP-${loan.loanNumber}-W${inst.installmentNumber}`;
       if (inst.paidAmount > 0) {
-        await Payment.findOneAndUpdate(
-          {
-            $or: [
-              { receiptNumber: rcpt },
-              { 'allocations.installmentId': inst._id }
-            ]
-          },
-          {
-            $set: {
-              receiptNumber: rcpt,
-              loanId: loan._id,
-              customerId: loan.customerId,
-              groupId: loan.groupId,
-              branchId: loan.branchId,
-              paymentDate: inst.dueDate,
-              amount: inst.paidAmount,
-              paymentMethod: 'CASH',
-              allocations: [
-                {
-                  installmentId: inst._id,
-                  installmentNumber: inst.installmentNumber,
-                  amount: inst.paidAmount,
-                  principalPortion: inst.allocatedPrincipal || 0,
-                  interestPortion: inst.allocatedInterest || 0,
-                  savingsPortion: inst.allocatedSavings || 0
-                }
-              ]
-            }
-          },
-          { upsert: true, new: true }
-        );
-      } else if (inst.paidAmount === 0) {
-        await Payment.deleteOne({
+        const existingPayments = await Payment.find({
           $or: [
-            { receiptNumber: rcpt },
-            { 'allocations.installmentId': inst._id }
+            { 'allocations.installmentId': inst._id },
+            { 'allocations.installmentNumber': inst.installmentNumber, loanId: loan._id },
+            { receiptNumber: rcpt }
+          ],
+          isReversed: { $ne: true }
+        }).sort({ paymentDate: -1, createdAt: -1 });
+
+        if (existingPayments.length === 1) {
+          const p = existingPayments[0];
+          p.paymentDate = inst.paidDate || inst.dueDate;
+          p.amount = inst.paidAmount;
+          if (p.allocations && p.allocations.length === 1) {
+            p.allocations[0].amount = inst.paidAmount;
+            p.allocations[0].principalPortion = inst.allocatedPrincipal || 0;
+            p.allocations[0].interestPortion = inst.allocatedInterest || 0;
+            p.allocations[0].savingsPortion = inst.allocatedSavings || 0;
+          }
+          await p.save();
+        } else if (existingPayments.length > 1) {
+          // Multi-part collection: update the latest payment date to match inst.paidDate
+          const latestP = existingPayments[0];
+          latestP.paymentDate = inst.paidDate || inst.dueDate;
+          await latestP.save();
+        } else {
+          await Payment.create({
+            receiptNumber: rcpt,
+            loanId: loan._id,
+            customerId: loan.customerId,
+            groupId: loan.groupId,
+            branchId: loan.branchId,
+            paymentDate: inst.paidDate || inst.dueDate,
+            amount: inst.paidAmount,
+            paymentMethod: 'CASH',
+            allocations: [
+              {
+                installmentId: inst._id,
+                installmentNumber: inst.installmentNumber,
+                amount: inst.paidAmount,
+                principalPortion: inst.allocatedPrincipal || 0,
+                interestPortion: inst.allocatedInterest || 0,
+                savingsPortion: inst.allocatedSavings || 0
+              }
+            ]
+          });
+        }
+      } else if (inst.paidAmount === 0) {
+        await Payment.deleteMany({
+          $or: [
+            { 'allocations.installmentId': inst._id },
+            { 'allocations.installmentNumber': inst.installmentNumber, loanId: loan._id },
+            { receiptNumber: rcpt }
           ]
         });
       }
