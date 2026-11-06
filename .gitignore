@@ -31,7 +31,6 @@ pnpm-debug.log*
 server/src/services/ledgerBaselineData.json
 
 # Deployment overrides
-netlify.toml
 client/public/_redirects
 
 # Excel workbooks & source spreadsheets

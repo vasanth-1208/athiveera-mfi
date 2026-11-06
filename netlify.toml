@@ -1,0 +1,19 @@
+[build]
+  publish = "client/dist"
+  command = "npm --prefix server ci --include=dev && npm --prefix client ci --include=dev && npm run build"
+
+[build.environment]
+  SECRETS_SCAN_ENABLED = "false"
+  SECRETS_SCAN_OMIT_KEYS = "PORT,NODE_ENV,CORS_ORIGIN,JWT_EXPIRES_IN,JWT_SECRET,MONGODB_URI"
+  MONGOMS_DISABLE_POSTINSTALL = "true"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://athiveera-mfi.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
