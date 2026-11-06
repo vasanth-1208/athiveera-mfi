@@ -1360,7 +1360,7 @@ export const Loans: React.FC = () => {
                       {isOverdueTab && (
                         <td className="px-4 py-3.5">
                           <span className="font-bold text-rose-700 text-sm">
-                            ₹{(l.outstandingTotal ?? Math.max(0, (l.totalPayable || 0) - (l.totalPaid || 0))).toLocaleString('en-IN')}
+                            ₹{(l.overdueAmount ?? l.outstandingTotal ?? Math.max(0, (l.totalPayable || 0) - (l.totalPaid || 0))).toLocaleString('en-IN')}
                           </span>
                           <span className="text-[10px] text-stone-500 block">
                             {l.overdueWeeks ? `${l.overdueWeeks} wks overdue` : 'Pending Due'}

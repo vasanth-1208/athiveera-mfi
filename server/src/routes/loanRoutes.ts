@@ -97,6 +97,21 @@ router.get('/', async (req: Request, res: Response) => {
       }
     }
 
+    // Auto-mark ACTIVE loans with past-due installments as OVERDUE
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    const loanIdsWithOverdueInsts = await Installment.distinct('loanId', {
+      dueDate: { $lt: todayMidnight },
+      balanceAmount: { $gt: 0 },
+      status: { $in: ['OVERDUE', 'PENDING'] }
+    });
+    if (loanIdsWithOverdueInsts.length > 0) {
+      await Loan.updateMany(
+        { _id: { $in: loanIdsWithOverdueInsts }, status: 'ACTIVE' },
+        { $set: { status: 'OVERDUE' } }
+      );
+    }
+
     const p = parseInt(String(page));
     const l = parseInt(String(limit));
     const total = await Loan.countDocuments(query);
@@ -110,6 +125,30 @@ router.get('/', async (req: Request, res: Response) => {
       .skip((p - 1) * l)
       .limit(l)
       .lean();
+
+    // For OVERDUE loans: attach overdueAmount (sum of overdue instalment balanceAmounts) and overdueWeeks count
+    if (status === 'OVERDUE') {
+      const loanIds = loans.filter(l => l.status === 'OVERDUE').map(l => l._id);
+      const overdueInsts = await Installment.find({
+        loanId: { $in: loanIds },
+        status: 'OVERDUE',
+        balanceAmount: { $gt: 0 }
+      }).select('loanId balanceAmount').lean();
+
+      const overdueMap: Record<string, { amount: number; weeks: number }> = {};
+      for (const inst of overdueInsts) {
+        const key = inst.loanId.toString();
+        if (!overdueMap[key]) overdueMap[key] = { amount: 0, weeks: 0 };
+        overdueMap[key].amount += inst.balanceAmount || 0;
+        overdueMap[key].weeks += 1;
+      }
+
+      loans.forEach((l: any) => {
+        const key = l._id.toString();
+        l.overdueAmount = overdueMap[key]?.amount ?? 0;
+        l.overdueWeeks = overdueMap[key]?.weeks ?? 0;
+      });
+    }
 
     res.json({
       success: true,

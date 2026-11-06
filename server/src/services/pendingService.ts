@@ -53,6 +53,19 @@ export async function getPendingOverdueRegister(params: PendingOverdueFilter): P
     { $set: { status: 'OVERDUE' } }
   );
 
+  // Auto-mark loan status to OVERDUE when it has overdue installments but is still ACTIVE
+  const loansWithOverdueInsts = await Installment.distinct('loanId', {
+    dueDate: { $lt: todayStart },
+    balanceAmount: { $gt: 0 },
+    status: 'OVERDUE'
+  });
+  if (loansWithOverdueInsts.length > 0) {
+    await Loan.updateMany(
+      { _id: { $in: loansWithOverdueInsts }, status: 'ACTIVE' },
+      { $set: { status: 'OVERDUE' } }
+    );
+  }
+
   // Build branch-scoped target filter
   const baseBranchFilter: any = {};
   if (branchId && branchId !== 'undefined' && branchId !== 'null' && branchId !== '' && branchId !== 'ALL') {
