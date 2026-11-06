@@ -38,11 +38,15 @@ export async function apiRequest<T = any>(
     }
   }
 
+  if (res.status === 502 || res.status === 504 || res.status === 503) {
+    throw new Error(`Server is starting up (Status ${res.status}). Please wait a few seconds.`);
+  }
+
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
     const text = await res.text();
     if (text.startsWith('<!DOCTYPE') || text.includes('<html')) {
-      throw new Error(`Cannot reach Backend API at ${API_BASE}. Please ensure your backend is deployed and VITE_API_URL is configured in Netlify.`);
+      throw new Error(`Cannot reach Backend API at ${API_BASE}. Server may be waking up.`);
     }
     throw new Error(text || `Request failed with status ${res.status}`);
   }
@@ -217,5 +221,8 @@ export const api = {
   updateMasterPayment: (id: string, data: any) => apiRequest(`/master-data/payments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   realignLoanScheduleDates: (loanId: string) => apiRequest(`/master-data/loans/${loanId}/realign-schedule-dates`, { method: 'POST' }),
   getMasterGroups: (params?: any) => apiRequest(`/master-data/groups${cleanQuery(params)}`),
-  updateMasterGroup: (id: string, data: any) => apiRequest(`/master-data/groups/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+  updateMasterGroup: (id: string, data: any) => apiRequest(`/master-data/groups/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Health Check
+  pingHealth: () => fetch(`${API_BASE}/health`).then(r => r.json()).catch(() => null)
 };

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'athiveera-mfi-v1';
+const CACHE_NAME = 'athiveera-mfi-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

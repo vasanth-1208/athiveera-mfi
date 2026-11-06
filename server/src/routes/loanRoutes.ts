@@ -935,22 +935,34 @@ router.post('/:id/settle', async (req: Request, res: Response) => {
     }
 
     // Create payment receipt with unique collision-proof number and full allocations
-    const receiptNumber = await getNextReceiptNumber();
-
-    const payment = await Payment.create({
-      receiptNumber,
-      loanId: loan._id,
-      customerId: loan.customerId,
-      groupId: loan.groupId,
-      branchId: loan.branchId,
-      collectorId: req.user?.id,
-      paymentDate,
-      amount: settleAmt,
-      paymentMethod,
-      referenceNo,
-      remarks: `Early Settlement. Total Due: ₹${totalRemaining}, Discount: ₹${discount}, Savings: ₹${savingsAmount} (${isDeductSavings ? 'Deducted from payoff' : 'Refunded in cash'}). ${remarks}`.trim(),
-      allocations
-    });
+    let payment: any;
+    let attempts = 0;
+    while (attempts < 5) {
+      try {
+        const receiptNumber = await getNextReceiptNumber();
+        payment = await Payment.create({
+          receiptNumber,
+          loanId: loan._id,
+          customerId: loan.customerId,
+          groupId: loan.groupId,
+          branchId: loan.branchId,
+          collectorId: req.user?.id,
+          paymentDate,
+          amount: settleAmt,
+          paymentMethod,
+          referenceNo,
+          remarks: `Early Settlement. Total Due: ₹${totalRemaining}, Discount: ₹${discount}, Savings: ₹${savingsAmount} (${isDeductSavings ? 'Deducted from payoff' : 'Refunded in cash'}). ${remarks}`.trim(),
+          allocations
+        });
+        break;
+      } catch (err: any) {
+        if (err.code === 11000) {
+          attempts++;
+          continue;
+        }
+        throw err;
+      }
+    }
 
     // Update loan status to SETTLED
     loan.status = 'SETTLED';
@@ -972,7 +984,7 @@ router.post('/:id/settle', async (req: Request, res: Response) => {
         amount: settleAmt,
         relatedEntityType: 'SETTLEMENT',
         relatedEntityId: payment._id,
-        description: `Settlement receipt ${receiptNumber}. Contractual Bal ₹${totalRemaining}, Discount ₹${discount}`,
+        description: `Settlement receipt ${payment.receiptNumber}. Contractual Bal ₹${totalRemaining}, Discount ₹${discount}`,
         createdById: req.user?.id
       });
     }

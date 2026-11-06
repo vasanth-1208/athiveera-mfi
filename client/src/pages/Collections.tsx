@@ -104,7 +104,7 @@ export const Collections: React.FC = () => {
   };
   const [selectedStaffId, setSelectedStaffId] = useState<string>('ALL');
   const [search, setSearch] = useState('');
-  const [payingLoanId, setPayingLoanId] = useState<string | null>(null);
+  const [payingLoanIds, setPayingLoanIds] = useState<Record<string, boolean>>({});
   const [payingGroupId, setPayingGroupId] = useState<string | null>(null);
   const [showCompletedGroups, setShowCompletedGroups] = useState<boolean>(false);
 
@@ -375,7 +375,14 @@ export const Collections: React.FC = () => {
 
   const recordMutation = useMutation({
     mutationFn: (payData: any) => api.recordCollection(payData),
-    onSuccess: () => {
+    onSuccess: (_data: any, variables: any) => {
+      if (variables?.loanId) {
+        setPayingLoanIds(prev => {
+          const next = { ...prev };
+          delete next[variables.loanId];
+          return next;
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['dailySheet'] });
       queryClient.invalidateQueries({ queryKey: ['weeklySheet'] });
       queryClient.invalidateQueries({ queryKey: ['staffCollections'] });
@@ -389,10 +396,14 @@ export const Collections: React.FC = () => {
       setPartialMember(null);
       setPartialAmount('');
       setRemarks('');
-      setPayingLoanId(null);
     },
     onError: (err: any, variables: any) => {
       if (variables?.loanId) {
+        setPayingLoanIds(prev => {
+          const next = { ...prev };
+          delete next[variables.loanId];
+          return next;
+        });
         setOptimisticPaidLoans(prev => {
           const next = { ...prev };
           delete next[variables.loanId];
@@ -400,18 +411,19 @@ export const Collections: React.FC = () => {
         });
       }
       alert(err.message || 'Failed to record collection');
-      setPayingLoanId(null);
     }
   });
 
   // Fast 1-click Mark Full Expected Installment as Paid with instant optimistic 0ms UI update
   const handleQuickMarkPaid = (member: any) => {
     if (!member.expectedAmount || member.expectedAmount <= 0) return;
+    if (payingLoanIds[member.loanId]) return;
+
+    setPayingLoanIds(prev => ({ ...prev, [member.loanId]: true }));
     setOptimisticPaidLoans(prev => ({
       ...prev,
       [member.loanId]: { amount: member.expectedAmount, time: Date.now() }
     }));
-    setPayingLoanId(member.loanId);
     recordMutation.mutate({
       loanId: member.loanId,
       amount: member.expectedAmount,
@@ -1034,7 +1046,7 @@ export const Collections: React.FC = () => {
                               const isOptPaid = Boolean(opt);
                               const isFullyPaid = isOptPaid || m.isPaidToday || m.installmentStatus === 'PAID' || !m.installmentNumber || m.expectedAmount <= 0;
                               const isPartial = !isFullyPaid && (m.installmentStatus === 'PARTIAL' || (m.installmentPaid > 0 && m.expectedAmount > 0));
-                              const isPayingThis = payingLoanId === m.loanId;
+                              const isPayingThis = Boolean(payingLoanIds[m.loanId]);
                               const displayExpected = isOptPaid ? 0 : (m.installmentExpected || m.expectedAmount || m.todayPaid || 0);
                               const displayTodayPaid = (m.todayPaid || 0) + (isOptPaid ? opt.amount : 0);
 
@@ -1203,7 +1215,7 @@ export const Collections: React.FC = () => {
                                         <div className="flex items-center justify-end gap-2">
                                           <button
                                             onClick={() => handleQuickMarkPaid(m)}
-                                            disabled={isPayingThis || recordMutation.isPending}
+                                            disabled={isPayingThis}
                                             className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
                                             title="Record recovery payment for this bad debt"
                                           >
@@ -1212,7 +1224,7 @@ export const Collections: React.FC = () => {
                                           </button>
                                           <button
                                             onClick={() => handleOpenPartialModal(m)}
-                                            disabled={isPayingThis || recordMutation.isPending}
+                                            disabled={isPayingThis}
                                             className="px-2.5 py-1.5 bg-[#f6f0e4] hover:bg-[#ede3d0] text-amber-950 font-bold rounded-xl text-xs border border-[#ded3be] transition cursor-pointer disabled:opacity-50"
                                             title="Record recovery payment for this bad debt"
                                           >
@@ -1224,7 +1236,7 @@ export const Collections: React.FC = () => {
                                           {/* 1-Click Fast Mark Paid Button */}
                                           <button
                                             onClick={() => handleQuickMarkPaid(m)}
-                                            disabled={isPayingThis || recordMutation.isPending}
+                                            disabled={isPayingThis}
                                             className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50"
                                             title="Mark full installment as collected"
                                           >
@@ -1235,7 +1247,7 @@ export const Collections: React.FC = () => {
                                           {/* Mark Partial Button */}
                                           <button
                                             onClick={() => handleOpenPartialModal(m)}
-                                            disabled={isPayingThis || recordMutation.isPending}
+                                            disabled={isPayingThis}
                                             className="px-3 py-1.5 bg-[#f6f0e4] hover:bg-[#ede3d0] text-amber-950 font-bold rounded-xl text-xs border border-[#ded3be] transition cursor-pointer disabled:opacity-50"
                                             title="Record a custom or partial repayment amount"
                                           >

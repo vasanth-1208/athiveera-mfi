@@ -7,7 +7,8 @@ import {
   Users,
   Menu,
   FolderTree,
-  AlertCircle
+  AlertCircle,
+  ClipboardList
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSidebar } from '../context/SidebarContext';
@@ -46,23 +47,10 @@ export const MobileBottomNav: React.FC = () => {
             <FolderTree className="w-5 h-5 mb-0.5 shrink-0" />
             <span>Routes</span>
           </NavLink>
-          <NavLink to="/pending" className={getTabClass('/pending')}>
-            <AlertCircle className="w-5 h-5 mb-0.5 shrink-0" />
-            <span>Overdue</span>
+          <NavLink to="/enquiries" className={getTabClass('/enquiries')}>
+            <ClipboardList className="w-5 h-5 mb-0.5 shrink-0" />
+            <span>Loan Enquiry</span>
           </NavLink>
-          <NavLink to="/loans" className={getTabClass('/loans')}>
-            <HandCoins className="w-5 h-5 mb-0.5 shrink-0" />
-            <span>Loans</span>
-          </NavLink>
-          <button
-            type="button"
-            onClick={toggleMobile}
-            className={`${baseTabClass} text-stone-500 dark:text-stone-400 hover:text-amber-600`}
-            title="Open Menu"
-          >
-            <Menu className="w-5 h-5 mb-0.5 shrink-0" />
-            <span>More</span>
-          </button>
         </>
       ) : (
         <>

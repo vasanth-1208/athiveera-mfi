@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, User, AlertCircle, ArrowRight, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import { Lock, User, AlertCircle, ArrowRight, Eye, EyeOff, ShieldCheck, Loader2 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { isPwa } from '../utils/authStorage';
@@ -15,28 +15,64 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const isPwaApp = isPwa();
 
+  useEffect(() => {
+    // Silently pre-warm cloud backend container on login screen load
+    api.pingHealth();
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    try {
-      const res = await api.login({
-        username: username.trim(),
-        password,
-        clientType: isPwaApp ? 'PWA' : 'BROWSER'
-      });
-      if (res.success && res.token && res.user) {
-        login(res.token, res.user, isPwaApp);
-        navigate('/');
-      } else {
-        setError(res.message || 'Login failed. Please check your credentials.');
+    let attempts = 0;
+    while (attempts < 3) {
+      try {
+        const res = await api.login({
+          username: username.trim(),
+          password,
+          clientType: isPwaApp ? 'PWA' : 'BROWSER'
+        });
+        if (res.success && res.token && res.user) {
+          login(res.token, res.user, isPwaApp);
+          if (res.user.role === 'COLLECTION_STAFF') {
+            navigate('/collections');
+          } else {
+            navigate('/');
+          }
+          return;
+        } else {
+          setError(res.message || 'Login failed. Please check your credentials.');
+          return;
+        }
+      } catch (err: any) {
+        const msg = String(err?.message || '');
+        const isColdStart =
+          msg.includes('502') ||
+          msg.includes('503') ||
+          msg.includes('504') ||
+          msg.includes('starting up') ||
+          msg.includes('waking up') ||
+          msg.includes('Cannot reach Backend API') ||
+          msg.includes('Failed to fetch') ||
+          msg.includes('NetworkError');
+
+        if (isColdStart && attempts < 2) {
+          attempts++;
+          setError('Server is waking up (morning fresh start). Connecting automatically...');
+          await new Promise((r) => setTimeout(r, 3500));
+          continue;
+        }
+
+        setError(err.message || 'Invalid username or password');
+        return;
+      } finally {
+        if (attempts >= 2) {
+          setLoading(false);
+        }
       }
-    } catch (err: any) {
-      setError(err.message || 'Invalid username or password');
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   return (

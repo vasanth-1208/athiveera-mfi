@@ -123,22 +123,33 @@ router.post('/follow-up', async (req: Request, res: Response) => {
         });
       }
 
-      // Generate unique collision-proof receipt
-      const receiptNumber = await getNextReceiptNumber();
-
-      paymentRecord = await Payment.create({
-        receiptNumber,
-        loanId: loan._id,
-        customerId: loan.customerId,
-        groupId: loan.groupId,
-        branchId: loan.branchId,
-        collectorId: req.user?.id,
-        paymentDate,
-        amount: payAmt,
-        paymentMethod,
-        remarks: `Delinquency Recovery: ${remarks}`,
-        allocations
-      });
+      // Generate unique collision-proof receipt with atomic retry
+      let attempts = 0;
+      while (attempts < 5) {
+        try {
+          const receiptNumber = await getNextReceiptNumber();
+          paymentRecord = await Payment.create({
+            receiptNumber,
+            loanId: loan._id,
+            customerId: loan.customerId,
+            groupId: loan.groupId,
+            branchId: loan.branchId,
+            collectorId: req.user?.id,
+            paymentDate,
+            amount: payAmt,
+            paymentMethod,
+            remarks: `Delinquency Recovery: ${remarks}`,
+            allocations
+          });
+          break;
+        } catch (err: any) {
+          if (err.code === 11000) {
+            attempts++;
+            continue;
+          }
+          throw err;
+        }
+      }
 
       // Update loan balance
       loan.totalPaid += payAmt;
@@ -172,7 +183,7 @@ router.post('/follow-up', async (req: Request, res: Response) => {
         amount: payAmt,
         relatedEntityType: 'COLLECTION',
         relatedEntityId: paymentRecord._id,
-        description: `Delinquency recovery receipt ${receiptNumber} (${paymentMethod}). Remarks: ${remarks}`,
+        description: `Delinquency recovery receipt ${paymentRecord.receiptNumber} (${paymentMethod}). Remarks: ${remarks}`,
         createdById: req.user?.id
       });
 

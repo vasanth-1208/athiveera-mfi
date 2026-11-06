@@ -67,7 +67,7 @@ const RoleRoute: React.FC<{
 }> = ({ allowedRoles, children }) => {
   const { user } = useAuth();
   if (user && !allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'COLLECTION_STAFF' ? '/enquiries' : '/'} replace />;
+    return <Navigate to={user.role === 'COLLECTION_STAFF' ? '/collections' : '/'} replace />;
   }
   return <>{children}</>;
 };
@@ -75,7 +75,7 @@ const RoleRoute: React.FC<{
 const HomeOrRedirect: React.FC = () => {
   const { user } = useAuth();
   if (user?.role === 'COLLECTION_STAFF') {
-    return <Navigate to="/enquiries" replace />;
+    return <Navigate to="/collections" replace />;
   }
   return <Dashboard />;
 };

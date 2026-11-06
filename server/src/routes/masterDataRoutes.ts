@@ -659,26 +659,43 @@ router.put('/installments/:id', requireRole('MAIN_ADMIN', 'BRANCH_MANAGER'), asy
           latestP.paymentDate = inst.paidDate || inst.dueDate;
           await latestP.save();
         } else {
-          await Payment.create({
-            receiptNumber: rcpt,
-            loanId: loan._id,
-            customerId: loan.customerId,
-            groupId: loan.groupId,
-            branchId: loan.branchId,
-            paymentDate: inst.paidDate || inst.dueDate,
-            amount: inst.paidAmount,
-            paymentMethod: 'CASH',
-            allocations: [
-              {
-                installmentId: inst._id,
-                installmentNumber: inst.installmentNumber,
+          let candidateRcpt = rcpt;
+          if (await Payment.exists({ receiptNumber: candidateRcpt })) {
+            candidateRcpt = await getNextReceiptNumber();
+          }
+          let attempts = 0;
+          while (attempts < 5) {
+            try {
+              await Payment.create({
+                receiptNumber: candidateRcpt,
+                loanId: loan._id,
+                customerId: loan.customerId,
+                groupId: loan.groupId,
+                branchId: loan.branchId,
+                paymentDate: inst.paidDate || inst.dueDate,
                 amount: inst.paidAmount,
-                principalPortion: inst.allocatedPrincipal || 0,
-                interestPortion: inst.allocatedInterest || 0,
-                savingsPortion: inst.allocatedSavings || 0
+                paymentMethod: 'CASH',
+                allocations: [
+                  {
+                    installmentId: inst._id,
+                    installmentNumber: inst.installmentNumber,
+                    amount: inst.paidAmount,
+                    principalPortion: inst.allocatedPrincipal || 0,
+                    interestPortion: inst.allocatedInterest || 0,
+                    savingsPortion: inst.allocatedSavings || 0
+                  }
+                ]
+              });
+              break;
+            } catch (err: any) {
+              if (err.code === 11000) {
+                candidateRcpt = await getNextReceiptNumber();
+                attempts++;
+                continue;
               }
-            ]
-          });
+              throw err;
+            }
+          }
         }
       } else if (inst.paidAmount === 0) {
         await Payment.deleteMany({

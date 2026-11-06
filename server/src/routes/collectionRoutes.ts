@@ -928,23 +928,35 @@ router.post('/record', async (req: Request, res: Response) => {
       });
     }
 
-    // Generate unique collision-proof receipt number
-    const receiptNumber = await getNextReceiptNumber();
-
-    const payment = await Payment.create({
-      receiptNumber,
-      loanId: loan._id,
-      customerId: loan.customerId,
-      groupId: loan.groupId,
-      branchId: loan.branchId,
-      collectorId: req.user?.id,
-      paymentDate: paymentDate,
-      amount: payAmt,
-      paymentMethod,
-      referenceNo,
-      remarks,
-      allocations
-    });
+    // Generate unique collision-proof receipt number with atomic retry
+    let payment: any;
+    let attempts = 0;
+    while (attempts < 5) {
+      try {
+        const receiptNumber = await getNextReceiptNumber();
+        payment = await Payment.create({
+          receiptNumber,
+          loanId: loan._id,
+          customerId: loan.customerId,
+          groupId: loan.groupId,
+          branchId: loan.branchId,
+          collectorId: req.user?.id,
+          paymentDate: paymentDate,
+          amount: payAmt,
+          paymentMethod,
+          referenceNo,
+          remarks,
+          allocations
+        });
+        break;
+      } catch (err: any) {
+        if (err.code === 11000) {
+          attempts++;
+          continue;
+        }
+        throw err;
+      }
+    }
 
     // Update loan outstanding
     loan.totalPaid += payAmt;
@@ -981,7 +993,7 @@ router.post('/record', async (req: Request, res: Response) => {
       amount: payAmt,
       relatedEntityType: 'COLLECTION',
       relatedEntityId: payment._id,
-      description: `Collection receipt ${receiptNumber} (${paymentMethod}). Remarks: ${remarks}`,
+      description: `Collection receipt ${payment.receiptNumber} (${paymentMethod}). Remarks: ${remarks}`,
       createdById: req.user?.id
     });
 
@@ -1095,21 +1107,33 @@ router.post('/record-group', async (req: Request, res: Response) => {
         });
       }
 
-      const receiptNumber = await getNextReceiptNumber();
-
-      const payment = await Payment.create({
-        receiptNumber,
-        loanId: loan._id,
-        customerId: loan.customerId,
-        groupId: loan.groupId,
-        branchId: loan.branchId,
-        collectorId: req.user?.id,
-        paymentDate,
-        amount: payAmt,
-        paymentMethod,
-        remarks: `${remarks} - W${instsToPay[0].installmentNumber}`,
-        allocations
-      });
+      let payment: any;
+      let attempts = 0;
+      while (attempts < 5) {
+        try {
+          const receiptNumber = await getNextReceiptNumber();
+          payment = await Payment.create({
+            receiptNumber,
+            loanId: loan._id,
+            customerId: loan.customerId,
+            groupId: loan.groupId,
+            branchId: loan.branchId,
+            collectorId: req.user?.id,
+            paymentDate,
+            amount: payAmt,
+            paymentMethod,
+            remarks: `${remarks} - W${instsToPay[0].installmentNumber}`,
+            allocations
+          });
+          break;
+        } catch (err: any) {
+          if (err.code === 11000) {
+            attempts++;
+            continue;
+          }
+          throw err;
+        }
+      }
 
       loan.totalPaid += payAmt;
       loan.outstandingTotal = Math.max(0, loan.outstandingTotal - payAmt);
@@ -1141,7 +1165,7 @@ router.post('/record-group', async (req: Request, res: Response) => {
         amount: payAmt,
         relatedEntityType: 'COLLECTION',
         relatedEntityId: payment._id,
-        description: `Group collection receipt ${receiptNumber} (${paymentMethod})`,
+        description: `Group collection receipt ${payment.receiptNumber} (${paymentMethod})`,
         createdById: req.user?.id
       });
 
